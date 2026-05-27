@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -7,7 +8,10 @@ public static class Fingerprint
 {
     /// SHA256 of the raw certificate bytes, as uppercase hex.
     public static string Compute(byte[] certRawData)
-        => Convert.ToHexString(SHA256.HashData(certRawData));
+    {
+        ArgumentNullException.ThrowIfNull(certRawData);
+        return Convert.ToHexString(SHA256.HashData(certRawData));
+    }
 
     /// A 4-digit code derived from both fingerprints. Deterministic and
     /// independent of argument order, so both machines compute the same value.
@@ -19,8 +23,8 @@ public static class Fingerprint
             : fingerprintB + fingerprintA;
 
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(ordered));
-        int value = ((hash[0] << 8) | hash[1]) % 10000;
-        return value.ToString("D4");
+        uint value = BinaryPrimitives.ReadUInt32BigEndian(hash);
+        return (value % 10000).ToString("D4");
     }
 
     /// Deterministic tie-breaker for who dials whom when both sides discover
