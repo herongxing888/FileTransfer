@@ -47,7 +47,7 @@ public class TlsHandshakeTests
     }
 
     [Fact]
-    public async Task Listener_Rejects_WhenClientFingerprintDoesNotMatchPin()
+    public async Task Listener_DoesNotAccept_ClientWithWrongFingerprint()
     {
         using var serverCert = CertificateFactory.CreateSelfSigned("Server");
         using var clientCert = CertificateFactory.CreateSelfSigned("Client");
@@ -56,21 +56,30 @@ public class TlsHandshakeTests
         string clientFp = Fingerprint.Compute(clientCert.RawData);
 
         int port = 47952;
-        // Listener trusts only clientFp; the rogue connects with a different cert.
+        // Listener trusts ONLY clientFp; the rogue presents a different cert.
         using var listener = new TransportListener(port, serverCert, expectedPeerFingerprint: clientFp);
-        bool accepted = false;
-        listener.ConnectionAccepted += _ => accepted = true;
+        int acceptedCount = 0;
+        listener.ConnectionAccepted += _ => Interlocked.Increment(ref acceptedCount);
         listener.Start();
 
-        // The rogue's pin of the server is correct, so the client side trusts the server;
-        // but the listener rejects the rogue's client cert, tearing down the handshake.
-        await Assert.ThrowsAnyAsync<Exception>(() =>
-            TransportConnector.ConnectAsync(
-                "127.0.0.1", port, rogueCert,
-                expectedPeerFingerprint: serverFp,
-                CancellationToken.None));
+        // The rogue's pin of the server (serverFp) is correct, so the rogue's client-side
+        // validation of the server passes. But the listener must reject the rogue's CLIENT
+        // certificate. With TLS 1.3 the rogue may still get a (dead) Connection back, so we
+        // tolerate either outcome on the client side and assert the real guarantee below.
+        Connection? rogueConn = null;
+        try
+        {
+            rogueConn = await TransportConnector.ConnectAsync(
+                "127.0.0.1", port, rogueCert, expectedPeerFingerprint: serverFp, CancellationToken.None);
+        }
+        catch
+        {
+            // Acceptable: the client may also observe the rejection and throw.
+        }
 
-        await Task.Delay(300); // give the listener a chance to (not) fire ConnectionAccepted
-        Assert.False(accepted);
+        await Task.Delay(500); // allow any erroneous accept to surface
+        // THE SECURITY GUARANTEE: the listener never accepts an untrusted client.
+        Assert.Equal(0, acceptedCount);
+        rogueConn?.Dispose();
     }
 }
