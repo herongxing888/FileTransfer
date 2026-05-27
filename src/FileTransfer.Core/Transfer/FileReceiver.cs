@@ -20,6 +20,9 @@ public sealed class FileReceiver
 
     public void Begin(FileOffer offer)
     {
+        if (_active.ContainsKey(offer.Id))
+            throw new InvalidOperationException($"Transfer {offer.Id} is already active.");
+
         string partPath = Path.Combine(Path.GetTempPath(), $"ft-{offer.Id:N}.part");
         var stream = new FileStream(partPath, FileMode.Create, FileAccess.Write);
         _active[offer.Id] = new Incoming(offer, partPath, stream, IncrementalHash.CreateHash(HashAlgorithmName.SHA256));
@@ -53,7 +56,15 @@ public sealed class FileReceiver
         }
 
         string finalPath = UniquePath(Sanitize(incoming.Offer.Name));
-        File.Move(incoming.PartPath, finalPath);
+        try
+        {
+            File.Move(incoming.PartPath, finalPath);
+        }
+        catch
+        {
+            TryDelete(incoming.PartPath); // don't leave a stale temp file if the move fails
+            throw;
+        }
         return finalPath;
     }
 

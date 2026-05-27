@@ -90,4 +90,21 @@ public class FileReceiverTests : IDisposable
         Assert.DoesNotContain('*', Path.GetFileName(finalPath));
         Assert.DoesNotContain('?', Path.GetFileName(finalPath));
     }
+
+    [Fact]
+    public void MultiChunk_AssembledAndHashedCorrectly()
+    {
+        byte[] chunk1 = { 1, 2, 3 };
+        byte[] chunk2 = { 4, 5, 6, 7 };
+        byte[] combined = chunk1.Concat(chunk2).ToArray();
+        var id = Guid.NewGuid();
+        var receiver = new FileReceiver(_dir);
+
+        receiver.Begin(new FileOffer { Id = id, Name = "multi.bin", Size = combined.Length });
+        receiver.WriteChunk(id, chunk1);
+        receiver.WriteChunk(id, chunk2);
+        string path = receiver.Complete(id, Sha(combined));
+
+        Assert.Equal(combined, File.ReadAllBytes(path));
+    }
 }
