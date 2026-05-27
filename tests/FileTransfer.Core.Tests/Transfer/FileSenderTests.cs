@@ -39,6 +39,28 @@ public class FileSenderTests : IDisposable
         Assert.Equal(data.Length, offer.Size);
         Assert.Equal(Path.GetFileName(_file), offer.Name);
         Assert.Equal(id, offer.Id);
+
+        var done = MessageSerializer.Deserialize<FileDone>(frames[4].Payload);
+        Assert.Equal(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(data)), done.Sha256);
+    }
+
+    [Fact]
+    public async Task EmptyFile_SendsOfferAndDone_WithEmptySha()
+    {
+        await File.WriteAllBytesAsync(_file, Array.Empty<byte>());
+        var sink = new FakeFrameSink();
+
+        await new FileSender(sink).SendAsync(_file, progress: null, CancellationToken.None);
+
+        var frames = sink.Frames.ToArray();
+        Assert.Equal(2, frames.Length);
+        Assert.Equal(MessageType.FileOffer, frames[0].Type);
+        Assert.Equal(MessageType.FileDone, frames[1].Type);
+
+        var done = MessageSerializer.Deserialize<FileDone>(frames[1].Payload);
+        Assert.Equal(
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Array.Empty<byte>())),
+            done.Sha256);
     }
 
     [Fact]

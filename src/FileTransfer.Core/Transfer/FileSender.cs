@@ -18,20 +18,23 @@ public sealed class FileSender
     /// SHA256). Returns the transfer id. `progress` reports cumulative bytes sent.
     public async Task<Guid> SendAsync(string path, Action<long>? progress, CancellationToken ct)
     {
-        var info = new FileInfo(path);
         var id = Guid.NewGuid();
+        var info = new FileInfo(path);
+
+        // Open the file BEFORE announcing the offer: if it is missing or locked we
+        // fail here, without leaving the receiver waiting on a transfer that never starts.
+        await using var stream = File.OpenRead(path);
 
         var offer = new FileOffer
         {
             Id = id,
             Name = info.Name,
-            Size = info.Length,
+            Size = stream.Length,
             Mime = MimeFor(info.Extension),
         };
         await _sink.SendAsync(MessageType.FileOffer, MessageSerializer.Serialize(offer), ct);
 
         using var sha = SHA256.Create();
-        await using var stream = File.OpenRead(path);
         var buffer = new byte[_chunkSize];
         long sent = 0;
         int read;
