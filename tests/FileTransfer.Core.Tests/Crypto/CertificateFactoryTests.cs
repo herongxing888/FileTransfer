@@ -15,6 +15,12 @@ public class CertificateFactoryTests
     }
 
     [Fact]
+    public void CreateSelfSigned_ThrowsOnEmptySubject()
+    {
+        Assert.Throws<ArgumentException>(() => CertificateFactory.CreateSelfSigned("  "));
+    }
+
+    [Fact]
     public void ExportAndImportPfx_PreservesFingerprintAndPrivateKey()
     {
         using var original = CertificateFactory.CreateSelfSigned("RoundTrip");
