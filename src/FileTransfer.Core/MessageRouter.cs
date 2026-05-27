@@ -15,6 +15,8 @@ public sealed class MessageRouter
     public event Action<Guid, string>? FileCompleted;     // id, final path
     public event Action<Guid, string>? TransferFailed;    // id, reason
 
+    // Per-transfer progress. Added on FileOffer, removed on FileDone/FileCancel. An entry
+    // for a transfer whose peer vanished is cleaned up when the Node disposes this router.
     private readonly Dictionary<Guid, (long Received, long Total)> _progress = new();
 
     public MessageRouter(FileReceiver receiver) => _receiver = receiver;
@@ -39,30 +41,35 @@ public sealed class MessageRouter
             case MessageType.FileChunk:
             {
                 var (id, data) = FileChunkCodec.Decode(payload);
+                // A chunk for a transfer we don't have active (late/duplicate after the
+                // transfer completed or was cancelled) is ignored, not treated as fatal.
+                if (!_progress.TryGetValue(id, out var p))
+                    break;
                 _receiver.WriteChunk(id, data);
-                if (_progress.TryGetValue(id, out var p))
-                {
-                    p.Received += data.Length;
-                    _progress[id] = p;
-                    FileProgress?.Invoke(id, p.Received, p.Total);
-                }
+                p.Received += data.Length;
+                _progress[id] = p;
+                FileProgress?.Invoke(id, p.Received, p.Total);
                 break;
             }
 
             case MessageType.FileDone:
             {
                 var done = MessageSerializer.Deserialize<FileDone>(payload);
+                string path;
                 try
                 {
-                    string path = _receiver.Complete(done.Id, done.Sha256);
-                    _progress.Remove(done.Id);
-                    FileCompleted?.Invoke(done.Id, path);
+                    path = _receiver.Complete(done.Id, done.Sha256);
                 }
                 catch (Exception ex)
                 {
+                    // Any failure finishing the file (checksum mismatch, IO/permission
+                    // error, unknown id) surfaces as a per-transfer failure, not a crash.
                     _progress.Remove(done.Id);
                     TransferFailed?.Invoke(done.Id, ex.Message);
+                    break;
                 }
+                _progress.Remove(done.Id);
+                FileCompleted?.Invoke(done.Id, path); // outside try: subscriber bugs propagate, not mislabeled
                 break;
             }
 

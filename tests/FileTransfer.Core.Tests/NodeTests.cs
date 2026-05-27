@@ -57,4 +57,44 @@ public class NodeTests : IDisposable
 
         Assert.Equal(offerId, failedId);
     }
+
+    [Fact]
+    public void HandleFrame_FileChunk_RaisesProgressReachingTotal()
+    {
+        var router = new MessageRouter(new FileReceiver(_dir));
+        (Guid Id, long Received, long Total)? last = null;
+        router.FileProgress += (id, recv, total) => last = (id, recv, total);
+
+        byte[] data = { 1, 2, 3, 4 };
+        var offerId = Guid.NewGuid();
+        router.Handle(MessageType.FileOffer, MessageSerializer.Serialize(
+            new FileOffer { Id = offerId, Name = "p.bin", Size = data.Length }));
+        router.Handle(MessageType.FileChunk, FileChunkCodec.Encode(offerId, data));
+
+        Assert.NotNull(last);
+        Assert.Equal(offerId, last!.Value.Id);
+        Assert.Equal(4, last.Value.Received);
+        Assert.Equal(4, last.Value.Total);
+    }
+
+    [Fact]
+    public void HandleFrame_FileDoneWithWrongSha_RaisesTransferFailedNotCompleted()
+    {
+        var router = new MessageRouter(new FileReceiver(_dir));
+        Guid? failedId = null;
+        bool completed = false;
+        router.TransferFailed += (id, _) => failedId = id;
+        router.FileCompleted += (_, _) => completed = true;
+
+        byte[] data = { 5, 6, 7 };
+        var offerId = Guid.NewGuid();
+        router.Handle(MessageType.FileOffer, MessageSerializer.Serialize(
+            new FileOffer { Id = offerId, Name = "bad.bin", Size = data.Length }));
+        router.Handle(MessageType.FileChunk, FileChunkCodec.Encode(offerId, data));
+        router.Handle(MessageType.FileDone, MessageSerializer.Serialize(
+            new FileDone { Id = offerId, Sha256 = "00000000" })); // deliberately wrong
+
+        Assert.Equal(offerId, failedId);
+        Assert.False(completed);
+    }
 }
