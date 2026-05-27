@@ -1,3 +1,5 @@
+using System.Net.Sockets;
+using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using FileTransfer.Core.Crypto;
 using FileTransfer.Core.Discovery;
@@ -31,6 +33,7 @@ public sealed class Node : IDisposable
     private TransportListener? _listener;
     private Connection? _connection;
     private readonly object _connLock = new();
+    private int _dialPending;
 
     public ConnectionStatus Status { get; private set; } = ConnectionStatus.Disconnected;
     public string PeerName { get; private set; } = "";
@@ -76,6 +79,7 @@ public sealed class Node : IDisposable
         if (peer.Fingerprint != _options.PeerFingerprint) return; // only our paired peer
         lock (_connLock) { if (_connection is not null) return; }   // already connected
         if (!Fingerprint.LocalInitiates(_ownFingerprint, peer.Fingerprint)) return; // the other side dials
+        if (Interlocked.CompareExchange(ref _dialPending, 1, 0) != 0) return; // a dial is already in flight
 
         _ = DialAsync(peer);
     }
@@ -89,9 +93,13 @@ public sealed class Node : IDisposable
             PeerName = peer.DeviceName;
             AdoptConnection(conn);
         }
-        catch
+        catch (Exception ex) when (ex is SocketException or IOException or AuthenticationException or OperationCanceledException)
         {
-            // peer not ready yet — discovery will retry on the next beacon
+            // peer not ready yet (or transient network failure) — discovery retries on the next beacon
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _dialPending, 0);
         }
     }
 
@@ -145,15 +153,21 @@ public sealed class Node : IDisposable
 
     private void SetStatus(ConnectionStatus status)
     {
-        if (Status == status) return;
-        Status = status;
-        StatusChanged?.Invoke(status);
+        bool changed;
+        lock (_connLock)
+        {
+            changed = Status != status;
+            if (changed) Status = status;
+        }
+        if (changed) StatusChanged?.Invoke(status); // raised outside the lock to avoid re-entrancy
     }
 
     public void Stop()
     {
         _discovery?.Dispose();
+        _discovery = null;
         _listener?.Dispose();
+        _listener = null;
         lock (_connLock) { _connection?.Dispose(); _connection = null; }
         SetStatus(ConnectionStatus.Disconnected);
     }
