@@ -61,4 +61,11 @@ public class AppConfigTests : IDisposable
         config.PeerFingerprint = "ABC";
         Assert.True(config.IsPaired);
     }
+
+    [Fact]
+    public void GetCertificate_ThrowsWhenNoCertStored()
+    {
+        var config = new AppConfig();
+        Assert.Throws<InvalidOperationException>(() => config.GetCertificate(new PassthroughProtector()));
+    }
 }

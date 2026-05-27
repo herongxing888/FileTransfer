@@ -39,7 +39,8 @@ public sealed class AppConfig
 
     public void Save(string path, ISecretProtector protector)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
         File.WriteAllText(path, JsonSerializer.Serialize(this, Json));
     }
 
