@@ -29,7 +29,9 @@ public class ConnectionTests
     public async Task PingIsAnsweredWithPong_Internally()
     {
         var (sa, sb) = DuplexStreamPair.Create();
-        using var connA = new Connection(sa, heartbeatInterval: TimeSpan.FromMilliseconds(100), heartbeatTimeout: TimeSpan.FromSeconds(5));
+        // 300ms timeout with 100ms interval: connA only survives the 600ms wait if connB's
+        // PONGs keep refreshing connA's last-inbound timestamp. A broken PONG path would time out.
+        using var connA = new Connection(sa, heartbeatInterval: TimeSpan.FromMilliseconds(100), heartbeatTimeout: TimeSpan.FromMilliseconds(300));
         using var connB = new Connection(sb, heartbeatInterval: Timeout.InfiniteTimeSpan, heartbeatTimeout: Timeout.InfiniteTimeSpan);
 
         bool closedFired = false;

@@ -14,8 +14,9 @@ public sealed class Connection : IFrameSink, IDisposable
     private readonly TimeSpan _heartbeatTimeout;
     private readonly CancellationTokenSource _cts = new();
 
-    private DateTime _lastInbound = DateTime.UtcNow;
+    private long _lastInboundTicks = DateTime.UtcNow.Ticks;
     private int _closedRaised;
+    private int _started;
 
     /// Raised for every non-PING/PONG frame. Handlers must not block.
     public event Action<MessageType, byte[]>? FrameReceived;
@@ -32,6 +33,9 @@ public sealed class Connection : IFrameSink, IDisposable
 
     public void Start()
     {
+        if (Interlocked.Exchange(ref _started, 1) != 0)
+            throw new InvalidOperationException("Connection already started.");
+
         _ = ReceiveLoopAsync(_cts.Token);
         if (_heartbeatInterval != Timeout.InfiniteTimeSpan)
             _ = HeartbeatLoopAsync(_cts.Token);
@@ -57,7 +61,7 @@ public sealed class Connection : IFrameSink, IDisposable
             {
                 var frame = await _reader.ReadAsync(ct);
                 if (frame is null) { RaiseClosed(null); return; } // clean EOF
-                _lastInbound = DateTime.UtcNow;
+                Interlocked.Exchange(ref _lastInboundTicks, DateTime.UtcNow.Ticks);
 
                 switch (frame.Value.Type)
                 {
@@ -72,7 +76,7 @@ public sealed class Connection : IFrameSink, IDisposable
                 }
             }
         }
-        catch (OperationCanceledException) { /* disposed */ }
+        catch (OperationCanceledException) { /* cancelled — connection shutting down */ }
         catch (Exception ex) { RaiseClosed(ex); }
     }
 
@@ -83,13 +87,15 @@ public sealed class Connection : IFrameSink, IDisposable
             while (!ct.IsCancellationRequested)
             {
                 await Task.Delay(_heartbeatInterval, ct);
+                var lastInbound = new DateTime(Interlocked.Read(ref _lastInboundTicks), DateTimeKind.Utc);
                 if (_heartbeatTimeout != Timeout.InfiniteTimeSpan &&
-                    DateTime.UtcNow - _lastInbound > _heartbeatTimeout)
+                    DateTime.UtcNow - lastInbound > _heartbeatTimeout)
                 {
                     RaiseClosed(new TimeoutException("Heartbeat timed out."));
                     return;
                 }
                 try { await SendAsync(MessageType.Ping, ReadOnlyMemory<byte>.Empty, ct); }
+                catch (OperationCanceledException) { return; } // normal shutdown
                 catch { RaiseClosed(new IOException("Failed to send heartbeat.")); return; }
             }
         }
@@ -108,8 +114,11 @@ public sealed class Connection : IFrameSink, IDisposable
     public void Dispose()
     {
         RaiseClosed(null);
-        _cts.Dispose();
+        // Dispose the stream first so any blocked ReadAsync/WriteAsync unblocks; the loops
+        // catch all exceptions and RaiseClosed is idempotent, so nothing escapes unobserved.
         _stream.Dispose();
-        _writeLock.Dispose();
+        _cts.Dispose();
+        // _writeLock is a SemaphoreSlim with no AvailableWaitHandle allocated, so it needs no
+        // disposal; skipping it avoids an ObjectDisposedException race with a still-running loop.
     }
 }
