@@ -1038,7 +1038,7 @@ public class DiscoveryServiceTests
         Assert.NotNull(heardByA);
         Assert.NotNull(heardByB);
         Assert.Equal("B", heardByA!.DeviceName);
-        Assert.Equal(47902, heardByB!.TcpPort);
+        Assert.Equal(47901, heardByB!.TcpPort); // heardByB is peer A, which listens on 47901
     }
 
     [Fact]
