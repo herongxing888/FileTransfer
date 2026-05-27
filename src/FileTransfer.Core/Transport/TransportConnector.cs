@@ -21,10 +21,9 @@ public static class TransportConnector
             userCertificateValidationCallback: (_, cert, _, _) =>
                 cert is not null && Fingerprint.Compute(cert.GetRawCertData()) == expectedPeerFingerprint);
 
-        // Round-trip through PFX so Windows SChannel gets a persisted key handle for
-        // client-certificate authentication (EphemeralKeySet keys are not supported by SChannel).
-        var clientCert = EnsurePersistedKey(ownCert);
-        bool clientCertIsOwned = !ReferenceEquals(clientCert, ownCert);
+        // SChannel needs a non-ephemeral key for client-cert auth; this cert's key
+        // is deleted when the cert is disposed (we dispose it when the connection closes).
+        var clientCert = CertificateFactory.MakeTlsReady(ownCert);
 
         var options = new SslClientAuthenticationOptions
         {
@@ -42,31 +41,13 @@ public static class TransportConnector
         {
             ssl.Dispose();
             tcp.Dispose();
-            if (clientCertIsOwned) clientCert.Dispose();
+            clientCert.Dispose();
             throw;
         }
 
         var conn = new Connection(ssl, HeartbeatInterval, HeartbeatTimeout);
+        conn.Closed += _ => clientCert.Dispose(); // delete the temp TLS key once the connection ends
         conn.Start();
         return conn;
-    }
-
-    /// Round-trips a cert through PFX export so Windows SChannel gets a persisted
-    /// key handle. Certs created with EphemeralKeySet (e.g. from RSA.Create()) fail
-    /// client-certificate authentication on Windows without this step.
-    private static X509Certificate2 EnsurePersistedKey(X509Certificate2 cert)
-    {
-        if (!cert.HasPrivateKey) return cert;
-        try
-        {
-            byte[] pfx = cert.Export(X509ContentType.Pfx);
-            // EphemeralKeySet intentionally omitted — Windows SChannel requires a persisted key handle.
-            return new X509Certificate2(pfx, (string?)null,
-                X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.UserKeySet);
-        }
-        catch
-        {
-            return cert; // fall back; SChannel will surface a clearer error
-        }
     }
 }
