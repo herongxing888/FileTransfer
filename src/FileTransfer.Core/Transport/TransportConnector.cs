@@ -16,8 +16,9 @@ public static class TransportConnector
     /// validating the client certificate. If the server REJECTS this client (fingerprint
     /// mismatch), ConnectAsync may still return a Connection that the server has already
     /// dropped. The server side remains protected (it never raises ConnectionAccepted for an
-    /// untrusted client). Confirming the peer accepted us is the job of the application-level
-    /// HELLO exchange (wired in Node); the heartbeat is the backstop that closes a dead link.
+    /// untrusted client). Confirming the peer accepted us is the job of an application-level
+    /// HELLO exchange (planned for the app layer, not yet wired); until then the heartbeat is
+    /// the backstop that closes a dead link.
     public static async Task<Connection> ConnectAsync(
         string host, int port, X509Certificate2 ownCert, string expectedPeerFingerprint, CancellationToken ct)
     {

@@ -41,7 +41,11 @@ public sealed class AppConfig
     {
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        File.WriteAllText(path, JsonSerializer.Serialize(this, Json));
+        // Write to a temp file then atomically replace, so a crash mid-write can't
+        // corrupt the existing config (which holds the DPAPI-protected certificate).
+        string tmp = path + ".tmp";
+        File.WriteAllText(tmp, JsonSerializer.Serialize(this, Json));
+        File.Move(tmp, path, overwrite: true);
     }
 
     /// Loads config, or returns null if the file does not exist.

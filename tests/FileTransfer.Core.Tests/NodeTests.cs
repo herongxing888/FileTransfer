@@ -97,4 +97,21 @@ public class NodeTests : IDisposable
         Assert.Equal(offerId, failedId);
         Assert.False(completed);
     }
+
+    [Fact]
+    public void HandleFrame_MalformedPayload_DoesNotThrow_AndConnectionSurvives()
+    {
+        var router = new MessageRouter(new FileReceiver(_dir));
+
+        // Malformed Text (invalid UTF-8/JSON) and a FileChunk shorter than the 16-byte GUID
+        // header must be swallowed, not thrown — otherwise the receive loop would drop the link.
+        Assert.Null(Record.Exception(() => router.Handle(MessageType.Text, new byte[] { 0xFF, 0xFF })));
+        Assert.Null(Record.Exception(() => router.Handle(MessageType.FileChunk, new byte[] { 1, 2, 3 })));
+
+        // A well-formed frame after the bad ones is still processed normally.
+        string? got = null;
+        router.TextReceived += t => got = t;
+        router.Handle(MessageType.Text, MessageSerializer.Serialize(new TextMessage { Id = Guid.NewGuid(), Text = "ok" }));
+        Assert.Equal("ok", got);
+    }
 }

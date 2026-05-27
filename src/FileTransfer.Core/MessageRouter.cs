@@ -17,11 +17,27 @@ public sealed class MessageRouter
 
     // Per-transfer progress. Added on FileOffer, removed on FileDone/FileCancel. An entry
     // for a transfer whose peer vanished is cleaned up when the Node disposes this router.
+    // Only touched on the single Connection receive-loop thread, so a plain Dictionary is safe.
     private readonly Dictionary<Guid, (long Received, long Total)> _progress = new();
 
     public MessageRouter(FileReceiver receiver) => _receiver = receiver;
 
     public void Handle(MessageType type, byte[] payload)
+    {
+        // A failure handling one inbound frame must never tear down the whole
+        // connection. Per-transfer failures are surfaced as TransferFailed inside
+        // Dispatch; an undecodable/foreign frame is dropped to keep the link alive.
+        try
+        {
+            Dispatch(type, payload);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"MessageRouter dropped a bad {type} frame: {ex.Message}");
+        }
+    }
+
+    private void Dispatch(MessageType type, byte[] payload)
     {
         switch (type)
         {
@@ -32,7 +48,15 @@ public sealed class MessageRouter
             case MessageType.FileOffer:
             {
                 var offer = MessageSerializer.Deserialize<FileOffer>(payload);
-                _receiver.Begin(offer);
+                try
+                {
+                    _receiver.Begin(offer);
+                }
+                catch (Exception ex)
+                {
+                    TransferFailed?.Invoke(offer.Id, ex.Message);
+                    break;
+                }
                 _progress[offer.Id] = (0, offer.Size);
                 FileOfferReceived?.Invoke(offer);
                 break;
@@ -45,7 +69,18 @@ public sealed class MessageRouter
                 // transfer completed or was cancelled) is ignored, not treated as fatal.
                 if (!_progress.TryGetValue(id, out var p))
                     break;
-                _receiver.WriteChunk(id, data);
+                try
+                {
+                    _receiver.WriteChunk(id, data);
+                }
+                catch (Exception ex)
+                {
+                    // e.g. disk full — fail this transfer, clean up, keep the connection alive.
+                    _receiver.Cancel(id);
+                    _progress.Remove(id);
+                    TransferFailed?.Invoke(id, ex.Message);
+                    break;
+                }
                 p.Received += data.Length;
                 _progress[id] = p;
                 FileProgress?.Invoke(id, p.Received, p.Total);
@@ -62,14 +97,12 @@ public sealed class MessageRouter
                 }
                 catch (Exception ex)
                 {
-                    // Any failure finishing the file (checksum mismatch, IO/permission
-                    // error, unknown id) surfaces as a per-transfer failure, not a crash.
                     _progress.Remove(done.Id);
                     TransferFailed?.Invoke(done.Id, ex.Message);
                     break;
                 }
                 _progress.Remove(done.Id);
-                FileCompleted?.Invoke(done.Id, path); // outside try: subscriber bugs propagate, not mislabeled
+                FileCompleted?.Invoke(done.Id, path);
                 break;
             }
 
