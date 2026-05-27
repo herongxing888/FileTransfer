@@ -31,6 +31,9 @@ public sealed class DiscoveryService : IDisposable
 
     public void Start()
     {
+        if (_cts is not null)
+            throw new InvalidOperationException("DiscoveryService is already started.");
+
         _cts = new CancellationTokenSource();
 
         _listener = new UdpClient();
@@ -58,6 +61,7 @@ public sealed class DiscoveryService : IDisposable
             {
                 try { await _sender!.SendAsync(beacon, beacon.Length, target); }
                 catch (SocketException) { /* interface down / unreachable — ignore */ }
+                catch (ObjectDisposedException) { return; /* disposed mid-send */ }
             }
             try { await Task.Delay(_announceInterval, ct); }
             catch (OperationCanceledException) { return; }
@@ -93,7 +97,9 @@ public sealed class DiscoveryService : IDisposable
             if (beacon is null || beacon.Magic != Magic) return null;
             return new PeerInfo(result.RemoteEndPoint.Address, beacon.TcpPort, beacon.Fingerprint, beacon.DeviceName);
         }
-        catch (JsonException) { return null; }
+        // Any malformed/foreign UDP packet (bad UTF-8, bad JSON, etc.) must be
+        // ignored without killing the listen loop.
+        catch (Exception) { return null; }
     }
 
     public void Dispose()
@@ -102,6 +108,7 @@ public sealed class DiscoveryService : IDisposable
         _listener?.Dispose();
         _sender?.Dispose();
         _cts?.Dispose();
+        _cts = null;
     }
 
     private sealed class Beacon
