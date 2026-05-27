@@ -28,6 +28,8 @@ public sealed class TransportListener : IDisposable
 
     public void Start()
     {
+        if (_tlsCert is not null)
+            throw new InvalidOperationException("Listener is already started.");
         _tlsCert = CertificateFactory.MakeTlsReady(_ownCert);
         _cts = new CancellationTokenSource();
         _listener = new TcpListener(IPAddress.Any, _port);

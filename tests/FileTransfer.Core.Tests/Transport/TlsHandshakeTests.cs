@@ -45,4 +45,32 @@ public class TlsHandshakeTests
                 expectedPeerFingerprint: "0000000000000000000000000000000000000000000000000000000000000000",
                 CancellationToken.None));
     }
+
+    [Fact]
+    public async Task Listener_Rejects_WhenClientFingerprintDoesNotMatchPin()
+    {
+        using var serverCert = CertificateFactory.CreateSelfSigned("Server");
+        using var clientCert = CertificateFactory.CreateSelfSigned("Client");
+        using var rogueCert = CertificateFactory.CreateSelfSigned("Rogue");
+        string serverFp = Fingerprint.Compute(serverCert.RawData);
+        string clientFp = Fingerprint.Compute(clientCert.RawData);
+
+        int port = 47952;
+        // Listener trusts only clientFp; the rogue connects with a different cert.
+        using var listener = new TransportListener(port, serverCert, expectedPeerFingerprint: clientFp);
+        bool accepted = false;
+        listener.ConnectionAccepted += _ => accepted = true;
+        listener.Start();
+
+        // The rogue's pin of the server is correct, so the client side trusts the server;
+        // but the listener rejects the rogue's client cert, tearing down the handshake.
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            TransportConnector.ConnectAsync(
+                "127.0.0.1", port, rogueCert,
+                expectedPeerFingerprint: serverFp,
+                CancellationToken.None));
+
+        await Task.Delay(300); // give the listener a chance to (not) fire ConnectionAccepted
+        Assert.False(accepted);
+    }
 }
