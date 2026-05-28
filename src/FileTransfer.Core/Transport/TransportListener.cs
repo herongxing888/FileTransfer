@@ -11,15 +11,17 @@ public sealed class TransportListener : IDisposable
 {
     private readonly int _port;
     private readonly X509Certificate2 _ownCert;
-    private readonly string _expectedPeerFingerprint;
+    private readonly string? _expectedPeerFingerprint;
     private TcpListener? _listener;
     private CancellationTokenSource? _cts;
     private X509Certificate2? _tlsCert;
 
-    /// Raised once per accepted, fully-handshaken peer connection.
     public event Action<Connection>? ConnectionAccepted;
 
-    public TransportListener(int port, X509Certificate2 ownCert, string expectedPeerFingerprint)
+    /// `expectedPeerFingerprint` null means unpinned: any well-formed client cert is
+    /// accepted and its fingerprint is exposed via Connection.PeerFingerprint for the
+    /// caller (PairingService) to validate at the application layer.
+    public TransportListener(int port, X509Certificate2 ownCert, string? expectedPeerFingerprint)
     {
         _port = port;
         _ownCert = ownCert;
@@ -46,7 +48,7 @@ public sealed class TransportListener : IDisposable
             catch (OperationCanceledException) { return; }
             catch (ObjectDisposedException) { return; }
 
-            _ = HandshakeAsync(tcp, ct); // handle each peer without blocking the accept loop
+            _ = HandshakeAsync(tcp, ct);
         }
     }
 
@@ -54,7 +56,12 @@ public sealed class TransportListener : IDisposable
     {
         var ssl = new SslStream(tcp.GetStream(), leaveInnerStreamOpen: false,
             userCertificateValidationCallback: (_, cert, _, _) =>
-                cert is not null && Fingerprint.Compute(cert.GetRawCertData()) == _expectedPeerFingerprint);
+            {
+                if (cert is null) return false;
+                // Unpinned: accept any cert; we still record its fingerprint below.
+                if (_expectedPeerFingerprint is null) return true;
+                return Fingerprint.Compute(cert.GetRawCertData()) == _expectedPeerFingerprint;
+            });
 
         var options = new SslServerAuthenticationOptions
         {
@@ -72,10 +79,18 @@ public sealed class TransportListener : IDisposable
         {
             ssl.Dispose();
             tcp.Dispose();
-            return; // rejected peer — drop silently
+            return;
         }
 
-        var conn = new Connection(ssl, TransportConnector.HeartbeatInterval, TransportConnector.HeartbeatTimeout);
+        // Always populate PeerFingerprint so callers (Node, PairingService) can read it
+        // uniformly without caring whether the listener was pinned or not.
+        string? peerFp = ssl.RemoteCertificate is { } rc
+            ? Fingerprint.Compute(rc.GetRawCertData())
+            : null;
+
+        var conn = new Connection(
+            ssl, TransportConnector.HeartbeatInterval, TransportConnector.HeartbeatTimeout,
+            peerFingerprint: peerFp);
         conn.Start();
         ConnectionAccepted?.Invoke(conn);
     }
