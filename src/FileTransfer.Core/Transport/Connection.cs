@@ -23,12 +23,18 @@ public sealed class Connection : IFrameSink, IDisposable
     /// Raised once when the connection ends (EOF, error, or heartbeat timeout).
     public event Action<Exception?>? Closed;
 
-    public Connection(Stream stream, TimeSpan heartbeatInterval, TimeSpan heartbeatTimeout)
+    /// SHA256 fingerprint (uppercase hex) of the peer's TLS certificate, populated by
+    /// the listener/connector after a successful handshake. Null if the connection
+    /// was constructed without it (e.g. in unit tests that bypass TLS).
+    public string? PeerFingerprint { get; }
+
+    public Connection(Stream stream, TimeSpan heartbeatInterval, TimeSpan heartbeatTimeout, string? peerFingerprint = null)
     {
         _stream = stream;
         _reader = new FrameReader(stream);
         _heartbeatInterval = heartbeatInterval;
         _heartbeatTimeout = heartbeatTimeout;
+        PeerFingerprint = peerFingerprint;
     }
 
     public void Start()
