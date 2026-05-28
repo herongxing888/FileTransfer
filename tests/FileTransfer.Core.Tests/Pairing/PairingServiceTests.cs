@@ -92,4 +92,52 @@ public class PairingServiceTests
         Assert.Equal(PairingState.AwaitingDecision, a.State);
         Assert.Equal(PairingState.AwaitingDecision, b.State);
     }
+
+    [Fact]
+    public async Task HappyPath_BothConfirm_RaisesPairingCompleted_OnBothSides()
+    {
+        using var certA = CertificateFactory.CreateSelfSigned("A");
+        using var certB = CertificateFactory.CreateSelfSigned("B");
+
+        int udp = 47986;
+        using var a = new PairingService(new PairingServiceOptions
+        {
+            DeviceName = "A", OwnCertificate = certA,
+            UdpPort = udp, TcpPort = 47987,
+            AnnounceInterval = TimeSpan.FromMilliseconds(100),
+        });
+        using var b = new PairingService(new PairingServiceOptions
+        {
+            DeviceName = "B", OwnCertificate = certB,
+            UdpPort = udp, TcpPort = 47988,
+            AnnounceInterval = TimeSpan.FromMilliseconds(100),
+        });
+
+        var aSeesB = new TaskCompletionSource<PeerCandidate>();
+        var aCompleted = new TaskCompletionSource<PairingResult>();
+        var bCompleted = new TaskCompletionSource<PairingResult>();
+        string bFp = Fingerprint.Compute(certB.RawData);
+        string aFp = Fingerprint.Compute(certA.RawData);
+
+        a.PeerDiscovered += p => { if (p.Fingerprint == bFp) aSeesB.TrySetResult(p); };
+        a.PairingCandidateReady += async (_, _) => await a.ConfirmAsync();
+        b.PairingCandidateReady += async (_, _) => await b.ConfirmAsync();
+        a.PairingCompleted += r => aCompleted.TrySetResult(r);
+        b.PairingCompleted += r => bCompleted.TrySetResult(r);
+
+        await a.StartAsync();
+        await b.StartAsync();
+        var bPeer = await aSeesB.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await a.RequestPairingAsync(bPeer);
+
+        var aRes = await aCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var bRes = await bCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(bFp, aRes.PeerFingerprint);
+        Assert.Equal("B", aRes.PeerDeviceName);
+        Assert.Equal(aFp, bRes.PeerFingerprint);
+        Assert.Equal("A", bRes.PeerDeviceName);
+        Assert.Equal(PairingState.Completed, a.State);
+        Assert.Equal(PairingState.Completed, b.State);
+    }
 }

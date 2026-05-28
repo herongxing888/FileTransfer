@@ -20,6 +20,8 @@ public sealed class PairingService : IDisposable
     private PairingState _state = PairingState.Idle;
     private Connection? _activeConnection;
     private PeerCandidate? _activePeer;
+    private bool _ourConfirmSent;
+    private bool _peerConfirmReceived;
 
     public string OwnFingerprint => _ownFingerprint;
     public PairingState State { get { lock (_stateLock) return _state; } }
@@ -115,8 +117,12 @@ public sealed class PairingService : IDisposable
 
     private void OnFrameReceived(MessageType type, byte[] payload)
     {
-        if (type == MessageType.Hello) { HandleHello(payload); return; }
-        // Other message types handled in later tasks.
+        switch (type)
+        {
+            case MessageType.Hello: HandleHello(payload); break;
+            case MessageType.PairingConfirm: HandlePeerConfirm(); break;
+            // PairingReject handled in a later task.
+        }
     }
 
     private void HandleHello(byte[] payload)
@@ -140,7 +146,46 @@ public sealed class PairingService : IDisposable
         PairingCandidateReady?.Invoke(code, finalPeer);
     }
 
-    public Task ConfirmAsync() => throw new NotImplementedException("Added in a later task.");
+    public async Task ConfirmAsync()
+    {
+        Connection conn;
+        lock (_stateLock)
+        {
+            if (_state != PairingState.AwaitingDecision)
+                throw new InvalidOperationException($"Cannot confirm in state {_state}.");
+            if (_ourConfirmSent) return;
+            _ourConfirmSent = true;
+            conn = _activeConnection ?? throw new InvalidOperationException("No active connection.");
+        }
+
+        await conn.SendAsync(MessageType.PairingConfirm, ReadOnlyMemory<byte>.Empty, CancellationToken.None);
+        TryComplete();
+    }
+
+    private void HandlePeerConfirm()
+    {
+        lock (_stateLock)
+        {
+            if (_state != PairingState.AwaitingDecision || _peerConfirmReceived) return;
+            _peerConfirmReceived = true;
+        }
+        TryComplete();
+    }
+
+    private void TryComplete()
+    {
+        PairingResult? result = null;
+        lock (_stateLock)
+        {
+            if (_state != PairingState.AwaitingDecision) return;
+            if (!_ourConfirmSent || !_peerConfirmReceived) return;
+            _state = PairingState.Completed;
+            var peer = _activePeer!;
+            result = new PairingResult(peer.Fingerprint, peer.DeviceName);
+        }
+        PairingCompleted?.Invoke(result);
+    }
+
     public Task RejectAsync(string reason = "") => throw new NotImplementedException("Added in a later task.");
 
     public void Stop()
