@@ -140,4 +140,47 @@ public class PairingServiceTests
         Assert.Equal(PairingState.Completed, a.State);
         Assert.Equal(PairingState.Completed, b.State);
     }
+
+    [Fact]
+    public async Task BRejects_BothSidesRaisePairingFailed_WithCorrectReasons()
+    {
+        using var certA = CertificateFactory.CreateSelfSigned("A");
+        using var certB = CertificateFactory.CreateSelfSigned("B");
+
+        int udp = 47989;
+        using var a = new PairingService(new PairingServiceOptions
+        {
+            DeviceName = "A", OwnCertificate = certA,
+            UdpPort = udp, TcpPort = 47990,
+            AnnounceInterval = TimeSpan.FromMilliseconds(100),
+        });
+        using var b = new PairingService(new PairingServiceOptions
+        {
+            DeviceName = "B", OwnCertificate = certB,
+            UdpPort = udp, TcpPort = 47991,
+            AnnounceInterval = TimeSpan.FromMilliseconds(100),
+        });
+
+        var aSeesB = new TaskCompletionSource<PeerCandidate>();
+        var aFailed = new TaskCompletionSource<PairingFailureReason>();
+        var bFailed = new TaskCompletionSource<PairingFailureReason>();
+        string bFp = Fingerprint.Compute(certB.RawData);
+
+        a.PeerDiscovered += p => { if (p.Fingerprint == bFp) aSeesB.TrySetResult(p); };
+        // A confirms (it will see PeerRejected from B). B rejects.
+        a.PairingCandidateReady += async (_, _) => await a.ConfirmAsync();
+        b.PairingCandidateReady += async (_, _) => await b.RejectAsync("test reject");
+        a.PairingFailed += (r, _) => aFailed.TrySetResult(r);
+        b.PairingFailed += (r, _) => bFailed.TrySetResult(r);
+
+        await a.StartAsync();
+        await b.StartAsync();
+        await a.RequestPairingAsync(await aSeesB.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        var aReason = await aFailed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var bReason = await bFailed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(PairingFailureReason.PeerRejected, aReason);
+        Assert.Equal(PairingFailureReason.LocallyRejected, bReason);
+    }
 }

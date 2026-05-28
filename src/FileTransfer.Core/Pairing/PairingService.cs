@@ -121,7 +121,7 @@ public sealed class PairingService : IDisposable
         {
             case MessageType.Hello: HandleHello(payload); break;
             case MessageType.PairingConfirm: HandlePeerConfirm(); break;
-            // PairingReject handled in a later task.
+            case MessageType.PairingReject: HandlePeerReject(); break;
         }
     }
 
@@ -186,7 +186,44 @@ public sealed class PairingService : IDisposable
         PairingCompleted?.Invoke(result);
     }
 
-    public Task RejectAsync(string reason = "") => throw new NotImplementedException("Added in a later task.");
+    public async Task RejectAsync(string reason = "")
+    {
+        Connection? conn;
+        lock (_stateLock)
+        {
+            if (_state != PairingState.AwaitingDecision)
+                throw new InvalidOperationException($"Cannot reject in state {_state}.");
+            conn = _activeConnection;
+        }
+
+        if (conn is not null)
+        {
+            try { await conn.SendAsync(MessageType.PairingReject, ReadOnlyMemory<byte>.Empty, CancellationToken.None); }
+            catch { /* peer may have already disconnected; we still fail locally */ }
+        }
+
+        Fail(PairingFailureReason.LocallyRejected, reason);
+    }
+
+    private void HandlePeerReject()
+    {
+        Fail(PairingFailureReason.PeerRejected, "");
+    }
+
+    private void Fail(PairingFailureReason reason, string detail)
+    {
+        bool raise;
+        lock (_stateLock)
+        {
+            // Idempotent: only the first failure wins.
+            if (_state == PairingState.Failed || _state == PairingState.Completed) return;
+            raise = _state == PairingState.Negotiating || _state == PairingState.AwaitingDecision;
+            _state = PairingState.Failed;
+            _activeConnection?.Dispose();
+            _activeConnection = null;
+        }
+        if (raise) PairingFailed?.Invoke(reason, detail);
+    }
 
     public void Stop()
     {
