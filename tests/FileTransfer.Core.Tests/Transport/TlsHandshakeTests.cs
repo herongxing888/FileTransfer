@@ -104,4 +104,23 @@ public class TlsHandshakeTests
         var serverConn = await serverConnTask.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(clientFp, serverConn.PeerFingerprint);
     }
+
+    [Fact]
+    public async Task UnpinnedConnector_PopulatesPeerFingerprint_WithRealServerCert()
+    {
+        using var serverCert = CertificateFactory.CreateSelfSigned("Server");
+        using var clientCert = CertificateFactory.CreateSelfSigned("Client");
+        string serverFp = Fingerprint.Compute(serverCert.RawData);
+        string clientFp = Fingerprint.Compute(clientCert.RawData);
+
+        int port = 47961;
+        // Listener also unpinned so the test isolates the connector's behaviour.
+        using var listener = new TransportListener(port, serverCert, expectedPeerFingerprint: null);
+        listener.Start();
+
+        using var clientConn = await TransportConnector.ConnectAsync(
+            "127.0.0.1", port, clientCert, expectedPeerFingerprint: null, CancellationToken.None);
+
+        Assert.Equal(serverFp, clientConn.PeerFingerprint);
+    }
 }
