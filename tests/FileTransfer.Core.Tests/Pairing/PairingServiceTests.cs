@@ -183,4 +183,43 @@ public class PairingServiceTests
         Assert.Equal(PairingFailureReason.PeerRejected, aReason);
         Assert.Equal(PairingFailureReason.LocallyRejected, bReason);
     }
+
+    [Fact]
+    public async Task DecisionTimeout_BothSidesRaisePairingFailed_LocalTimeout()
+    {
+        using var certA = CertificateFactory.CreateSelfSigned("A");
+        using var certB = CertificateFactory.CreateSelfSigned("B");
+
+        int udp = 47992;
+        using var a = new PairingService(new PairingServiceOptions
+        {
+            DeviceName = "A", OwnCertificate = certA,
+            UdpPort = udp, TcpPort = 47993,
+            AnnounceInterval = TimeSpan.FromMilliseconds(100),
+            DecisionTimeout = TimeSpan.FromMilliseconds(200),
+        });
+        using var b = new PairingService(new PairingServiceOptions
+        {
+            DeviceName = "B", OwnCertificate = certB,
+            UdpPort = udp, TcpPort = 47994,
+            AnnounceInterval = TimeSpan.FromMilliseconds(100),
+            DecisionTimeout = TimeSpan.FromMilliseconds(200),
+        });
+
+        var aSeesB = new TaskCompletionSource<PeerCandidate>();
+        var aFailed = new TaskCompletionSource<PairingFailureReason>();
+        var bFailed = new TaskCompletionSource<PairingFailureReason>();
+        string bFp = Fingerprint.Compute(certB.RawData);
+        a.PeerDiscovered += p => { if (p.Fingerprint == bFp) aSeesB.TrySetResult(p); };
+        // Nobody calls Confirm or Reject — just wait for the timer.
+        a.PairingFailed += (r, _) => aFailed.TrySetResult(r);
+        b.PairingFailed += (r, _) => bFailed.TrySetResult(r);
+
+        await a.StartAsync();
+        await b.StartAsync();
+        await a.RequestPairingAsync(await aSeesB.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        Assert.Equal(PairingFailureReason.LocalTimeout, await aFailed.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(PairingFailureReason.LocalTimeout, await bFailed.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
 }

@@ -22,6 +22,7 @@ public sealed class PairingService : IDisposable
     private PeerCandidate? _activePeer;
     private bool _ourConfirmSent;
     private bool _peerConfirmReceived;
+    private CancellationTokenSource? _decisionTimeoutCts;
 
     public string OwnFingerprint => _ownFingerprint;
     public PairingState State { get { lock (_stateLock) return _state; } }
@@ -141,9 +142,21 @@ public sealed class PairingService : IDisposable
             _activePeer = finalPeer;
             _state = PairingState.AwaitingDecision;
             code = Fingerprint.PairingCode(_ownFingerprint, peerFp);
+            ArmDecisionTimeout();
         }
-
         PairingCandidateReady?.Invoke(code, finalPeer);
+    }
+
+    // Must be called inside _stateLock.
+    private void ArmDecisionTimeout()
+    {
+        _decisionTimeoutCts = new CancellationTokenSource();
+        var ct = _decisionTimeoutCts.Token;
+        _ = Task.Delay(_options.DecisionTimeout, ct).ContinueWith(t =>
+        {
+            if (t.IsCanceled) return;
+            Fail(PairingFailureReason.LocalTimeout, "decision timeout");
+        }, TaskScheduler.Default);
     }
 
     public async Task ConfirmAsync()
@@ -180,6 +193,8 @@ public sealed class PairingService : IDisposable
             if (_state != PairingState.AwaitingDecision) return;
             if (!_ourConfirmSent || !_peerConfirmReceived) return;
             _state = PairingState.Completed;
+            _decisionTimeoutCts?.Cancel();
+            _decisionTimeoutCts = null;
             var peer = _activePeer!;
             result = new PairingResult(peer.Fingerprint, peer.DeviceName);
         }
@@ -219,6 +234,8 @@ public sealed class PairingService : IDisposable
             if (_state == PairingState.Failed || _state == PairingState.Completed) return;
             raise = _state == PairingState.Negotiating || _state == PairingState.AwaitingDecision;
             _state = PairingState.Failed;
+            _decisionTimeoutCts?.Cancel();
+            _decisionTimeoutCts = null;
             _activeConnection?.Dispose();
             _activeConnection = null;
         }
@@ -233,6 +250,8 @@ public sealed class PairingService : IDisposable
         _listener = null;
         lock (_stateLock)
         {
+            _decisionTimeoutCts?.Cancel();
+            _decisionTimeoutCts = null;
             _activeConnection?.Dispose();
             _activeConnection = null;
         }
