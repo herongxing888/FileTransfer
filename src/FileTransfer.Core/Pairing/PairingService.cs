@@ -113,8 +113,12 @@ public sealed class PairingService : IDisposable
         _ = conn.SendAsync(MessageType.Hello, MessageSerializer.Serialize(hello), CancellationToken.None);
     }
 
-    // No-op until Task 11 wires ConnectionLost handling.
-    private void OnActiveConnectionClosed() { }
+    private void OnActiveConnectionClosed()
+    {
+        // Treat a drop as ConnectionLost only if we're still mid-pairing. Fail is idempotent,
+        // so a Closed firing after Completed or Failed is a harmless no-op.
+        Fail(PairingFailureReason.ConnectionLost, "peer disconnected");
+    }
 
     private void OnFrameReceived(MessageType type, byte[] payload)
     {
@@ -236,8 +240,12 @@ public sealed class PairingService : IDisposable
             _state = PairingState.Failed;
             _decisionTimeoutCts?.Cancel();
             _decisionTimeoutCts = null;
-            _activeConnection?.Dispose();
-            _activeConnection = null;
+            // We intentionally do NOT dispose _activeConnection here. If we just sent a final
+            // frame (REJECT, CONFIRM) and disposed immediately, the local TCP close can race
+            // ahead of the in-flight bytes and the peer would observe ConnectionLost instead
+            // of the intended reason. The connection is torn down later by Stop()/Dispose();
+            // any peer-initiated close arrives via OnActiveConnectionClosed which calls Fail
+            // again, which is a no-op once state is already Failed.
         }
         if (raise) PairingFailed?.Invoke(reason, detail);
     }
