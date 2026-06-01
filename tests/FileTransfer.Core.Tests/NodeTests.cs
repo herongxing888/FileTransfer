@@ -4,6 +4,7 @@ using FileTransfer.Core.Transfer;
 
 namespace FileTransfer.Core.Tests;
 
+[Collection(LoopbackSocketCollection.Name)]
 public class NodeTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "ft-node-" + Guid.NewGuid());

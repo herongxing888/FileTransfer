@@ -2,6 +2,7 @@ using FileTransfer.Core.Discovery;
 
 namespace FileTransfer.Core.Tests.Discovery;
 
+[Collection(LoopbackSocketCollection.Name)]
 public class DiscoveryServiceTests
 {
     [Fact]

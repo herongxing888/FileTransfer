@@ -57,4 +57,22 @@ public class ConnectionTests
 
         await closed.Task.WaitAsync(TimeSpan.FromSeconds(3));
     }
+
+    [Fact]
+    public void PeerFingerprint_IsNull_WhenNotProvided()
+    {
+        var (sa, _) = DuplexStreamPair.Create();
+        using var conn = new Connection(sa, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        Assert.Null(conn.PeerFingerprint);
+    }
+
+    [Fact]
+    public void PeerFingerprint_ReturnsConstructorValue_WhenProvided()
+    {
+        var (sa, _) = DuplexStreamPair.Create();
+        using var conn = new Connection(
+            sa, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan,
+            peerFingerprint: "DEADBEEF");
+        Assert.Equal("DEADBEEF", conn.PeerFingerprint);
+    }
 }

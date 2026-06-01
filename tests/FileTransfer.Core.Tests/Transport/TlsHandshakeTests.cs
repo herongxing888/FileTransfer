@@ -3,6 +3,7 @@ using FileTransfer.Core.Transport;
 
 namespace FileTransfer.Core.Tests.Transport;
 
+[Collection(LoopbackSocketCollection.Name)]
 public class TlsHandshakeTests
 {
     [Fact]
@@ -81,5 +82,46 @@ public class TlsHandshakeTests
         // THE SECURITY GUARANTEE: the listener never accepts an untrusted client.
         Assert.Equal(0, acceptedCount);
         rogueConn?.Dispose();
+    }
+
+    [Fact]
+    public async Task UnpinnedListener_AcceptsAnyClient_AndPopulatesPeerFingerprint()
+    {
+        using var serverCert = CertificateFactory.CreateSelfSigned("Server");
+        using var clientCert = CertificateFactory.CreateSelfSigned("Client");
+        string serverFp = Fingerprint.Compute(serverCert.RawData);
+        string clientFp = Fingerprint.Compute(clientCert.RawData);
+
+        int port = 47960;
+        using var listener = new TransportListener(port, serverCert, expectedPeerFingerprint: null);
+
+        var serverConnTask = new TaskCompletionSource<Connection>();
+        listener.ConnectionAccepted += c => serverConnTask.TrySetResult(c);
+        listener.Start();
+
+        using var clientConn = await TransportConnector.ConnectAsync(
+            "127.0.0.1", port, clientCert, expectedPeerFingerprint: serverFp, CancellationToken.None);
+
+        var serverConn = await serverConnTask.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(clientFp, serverConn.PeerFingerprint);
+    }
+
+    [Fact]
+    public async Task UnpinnedConnector_PopulatesPeerFingerprint_WithRealServerCert()
+    {
+        using var serverCert = CertificateFactory.CreateSelfSigned("Server");
+        using var clientCert = CertificateFactory.CreateSelfSigned("Client");
+        string serverFp = Fingerprint.Compute(serverCert.RawData);
+        string clientFp = Fingerprint.Compute(clientCert.RawData);
+
+        int port = 47961;
+        // Listener also unpinned so the test isolates the connector's behaviour.
+        using var listener = new TransportListener(port, serverCert, expectedPeerFingerprint: null);
+        listener.Start();
+
+        using var clientConn = await TransportConnector.ConnectAsync(
+            "127.0.0.1", port, clientCert, expectedPeerFingerprint: null, CancellationToken.None);
+
+        Assert.Equal(serverFp, clientConn.PeerFingerprint);
     }
 }

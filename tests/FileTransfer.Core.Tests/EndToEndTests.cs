@@ -3,6 +3,7 @@ using FileTransfer.Core.Crypto;
 
 namespace FileTransfer.Core.Tests;
 
+[Collection(LoopbackSocketCollection.Name)]
 public class EndToEndTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "ft-e2e-" + Guid.NewGuid());

@@ -42,3 +42,8 @@ desktop.ini
 
 # App runtime artifacts (local config / received files should never be committed)
 *.part
+
+# Stray test output piped to files by tooling
+test_output.txt
+test-output.log
+*.trx.log
