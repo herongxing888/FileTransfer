@@ -109,6 +109,11 @@ public sealed class PairingService : IDisposable
             OnActiveConnectionClosed();
         };
 
+        // Transport hands us a not-yet-started Connection. Start the receive loop only
+        // after handlers are wired, otherwise the peer's HELLO can arrive before we
+        // subscribed to FrameReceived and the frame is silently dropped.
+        conn.Start();
+
         var hello = new HelloMessage { DeviceName = _options.DeviceName, ProtocolVersion = ProtocolVersion };
         _ = conn.SendAsync(MessageType.Hello, MessageSerializer.Serialize(hello), CancellationToken.None);
     }

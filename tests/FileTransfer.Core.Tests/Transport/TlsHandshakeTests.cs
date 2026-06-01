@@ -3,6 +3,7 @@ using FileTransfer.Core.Transport;
 
 namespace FileTransfer.Core.Tests.Transport;
 
+[Collection(LoopbackSocketCollection.Name)]
 public class TlsHandshakeTests
 {
     [Fact]

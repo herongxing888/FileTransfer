@@ -54,10 +54,12 @@ public static class TransportConnector
             ? Fingerprint.Compute(rc.GetRawCertData())
             : null;
 
+        // Do NOT start the receive loop here. The caller wires its FrameReceived/Closed
+        // handlers before calling Start() — otherwise a frame that arrives before handlers
+        // are wired is silently dropped.
         var conn = new Connection(
             ssl, HeartbeatInterval, HeartbeatTimeout, peerFingerprint: peerFp);
         conn.Closed += _ => clientCert.Dispose();
-        conn.Start();
         return conn;
     }
 }

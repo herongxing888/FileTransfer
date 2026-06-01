@@ -3,6 +3,7 @@ using FileTransfer.Core.Pairing;
 
 namespace FileTransfer.Core.Tests.Pairing;
 
+[Collection(LoopbackSocketCollection.Name)]
 public class PairingServiceTests
 {
     [Fact]

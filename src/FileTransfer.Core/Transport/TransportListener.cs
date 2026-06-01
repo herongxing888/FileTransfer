@@ -88,10 +88,12 @@ public sealed class TransportListener : IDisposable
             ? Fingerprint.Compute(rc.GetRawCertData())
             : null;
 
+        // Do NOT start the receive loop here. The subscriber wires FrameReceived/Closed
+        // handlers in its ConnectionAccepted callback and is responsible for calling Start()
+        // afterwards — otherwise a frame that arrives before handlers are wired is lost.
         var conn = new Connection(
             ssl, TransportConnector.HeartbeatInterval, TransportConnector.HeartbeatTimeout,
             peerFingerprint: peerFp);
-        conn.Start();
         ConnectionAccepted?.Invoke(conn);
     }
 

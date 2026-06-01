@@ -119,6 +119,9 @@ public sealed class Node : IDisposable
             SetStatus(ConnectionStatus.Offline);
         };
 
+        // Transport hands us a not-yet-started Connection so we can wire handlers first;
+        // start the receive loop only after FrameReceived/Closed are subscribed.
+        conn.Start();
         SetStatus(ConnectionStatus.Online);
     }
 
