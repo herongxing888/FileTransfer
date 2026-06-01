@@ -80,7 +80,7 @@ public sealed class PairingService : IDisposable
         {
             conn = await TransportConnector.ConnectAsync(
                 peer.Address.ToString(), peer.TcpPort, _options.OwnCertificate,
-                expectedPeerFingerprint: null, dialCt);
+                expectedPeerFingerprint: null, dialCt).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -106,7 +106,7 @@ public sealed class PairingService : IDisposable
                     && (_dialCts is null || !_dialCts.IsCancellationRequested);
         }
         if (!adopt) { conn.Dispose(); return; }
-        AdoptConnection(conn, isOutgoing: true);
+        await AdoptConnectionAsync(conn, isOutgoing: true).ConfigureAwait(false);
     }
 
     private void OnIncomingConnection(Connection conn)
@@ -149,10 +149,26 @@ public sealed class PairingService : IDisposable
                 adopt = true;
             }
         }
-        if (adopt) AdoptConnection(conn, isOutgoing: false);
+        if (adopt)
+        {
+            // Listener callback path is necessarily fire-and-forget — but we don't want
+            // unhandled exceptions from inside AdoptConnectionAsync to escape onto
+            // TaskScheduler.UnobservedTaskException unnoticed. Route any escape through
+            // Fail so the session terminates cleanly. AdoptConnectionAsync's own SendAsync
+            // catch already handles the expected case; this is a backstop for the rest.
+            _ = AdoptConnectionAsync(conn, isOutgoing: false).ContinueWith(t =>
+            {
+                if (t.IsFaulted && t.Exception is { } ex)
+                {
+                    System.Diagnostics.Debug.WriteLine(
+                        $"PairingService: AdoptConnectionAsync(incoming) faulted: {ex}");
+                    Fail(PairingFailureReason.ConnectionLost, ex.GetBaseException().Message);
+                }
+            }, TaskScheduler.Default);
+        }
     }
 
-    private void AdoptConnection(Connection conn, bool isOutgoing = false)
+    private async Task AdoptConnectionAsync(Connection conn, bool isOutgoing = false)
     {
         lock (_stateLock)
         {
@@ -181,13 +197,35 @@ public sealed class PairingService : IDisposable
             OnActiveConnectionClosed();
         };
 
-        // Transport hands us a not-yet-started Connection. Start the receive loop only
-        // after handlers are wired, otherwise the peer's HELLO can arrive before we
-        // subscribed to FrameReceived and the frame is silently dropped.
-        conn.Start();
-
+        // Send HELLO BEFORE starting the receive loop. On loopback the peer's HELLO is
+        // often already buffered when Start() launches ReceiveLoopAsync; that loop would
+        // dispatch FrameReceived synchronously on the calling thread, the auto-confirm
+        // handler would run ConfirmAsync, and PairingConfirm would hit the wire BEFORE our
+        // HELLO. The peer would then drop PairingConfirm because its state is still
+        // Negotiating, and pairing deadlocks. Awaiting SendAsync here guarantees HELLO is
+        // in the kernel send buffer before any reactive frame can overtake it.
         var hello = new HelloMessage { DeviceName = _options.DeviceName, ProtocolVersion = ProtocolVersion };
-        _ = conn.SendAsync(MessageType.Hello, MessageSerializer.Serialize(hello), CancellationToken.None);
+        try
+        {
+            await conn.SendAsync(MessageType.Hello, MessageSerializer.Serialize(hello), CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // Surface a send failure through the same path Connection.Closed uses, so the
+            // race-tiebreaker recovery (when this is an outgoing dial whose peer just dropped
+            // us in favour of the incoming) is honoured — OnActiveConnectionClosed inspects
+            // _activeConnectionIsOutgoing and either Fails immediately or defers by 3 s for
+            // the incoming connection to take over. Without this redirection, the catch
+            // would Fail synchronously and short-circuit the deferred-Fail mechanism.
+            System.Diagnostics.Debug.WriteLine(
+                $"PairingService: HELLO send failed on adoption ({ex.GetType().Name}: {ex.Message}); " +
+                "routing through OnActiveConnectionClosed for recovery.");
+            OnActiveConnectionClosed();
+            return;
+        }
+
+        conn.Start();
     }
 
     private void OnActiveConnectionClosed()
@@ -242,7 +280,13 @@ public sealed class PairingService : IDisposable
     {
         HelloMessage hello;
         try { hello = MessageSerializer.Deserialize<HelloMessage>(payload); }
-        catch { return; } // malformed HELLO is handled as ConnectionLost in a later task
+        catch
+        {
+            // A peer that sends a HELLO we cannot decode is not someone we can pair with.
+            // Fail immediately rather than sitting in Negotiating until the decision timeout.
+            Fail(PairingFailureReason.ConnectionLost, "malformed HELLO");
+            return;
+        }
 
         if (hello.ProtocolVersion != ProtocolVersion)
         {
@@ -289,7 +333,8 @@ public sealed class PairingService : IDisposable
             conn = _activeConnection ?? throw new InvalidOperationException("No active connection.");
         }
 
-        await conn.SendAsync(MessageType.PairingConfirm, ReadOnlyMemory<byte>.Empty, CancellationToken.None);
+        await conn.SendAsync(MessageType.PairingConfirm, ReadOnlyMemory<byte>.Empty, CancellationToken.None)
+            .ConfigureAwait(false);
         TryComplete();
     }
 
@@ -331,7 +376,8 @@ public sealed class PairingService : IDisposable
 
         if (conn is not null)
         {
-            try { await conn.SendAsync(MessageType.PairingReject, ReadOnlyMemory<byte>.Empty, CancellationToken.None); }
+            try { await conn.SendAsync(MessageType.PairingReject, ReadOnlyMemory<byte>.Empty, CancellationToken.None)
+                              .ConfigureAwait(false); }
             catch { /* peer may have already disconnected; we still fail locally */ }
         }
 
