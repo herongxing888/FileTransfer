@@ -314,6 +314,57 @@ public class PairingServiceTests
     }
 
     [Fact]
+    public async Task BothDialSimultaneously_ConvergesToOneSession_BothReachCompleted()
+    {
+        using var certA = CertificateFactory.CreateSelfSigned("A");
+        using var certB = CertificateFactory.CreateSelfSigned("B");
+
+        int udp = 48020;
+        using var a = new PairingService(new PairingServiceOptions
+        {
+            DeviceName = "A", OwnCertificate = certA,
+            UdpPort = udp, TcpPort = 48021,
+            AnnounceInterval = TimeSpan.FromMilliseconds(100),
+            DecisionTimeout = TimeSpan.FromSeconds(10),
+        });
+        using var b = new PairingService(new PairingServiceOptions
+        {
+            DeviceName = "B", OwnCertificate = certB,
+            UdpPort = udp, TcpPort = 48022,
+            AnnounceInterval = TimeSpan.FromMilliseconds(100),
+            DecisionTimeout = TimeSpan.FromSeconds(10),
+        });
+
+        var aSeesB = new TaskCompletionSource<PeerCandidate>();
+        var bSeesA = new TaskCompletionSource<PeerCandidate>();
+        var aCompleted = new TaskCompletionSource<PairingResult>();
+        var bCompleted = new TaskCompletionSource<PairingResult>();
+        string aFp = Fingerprint.Compute(certA.RawData);
+        string bFp = Fingerprint.Compute(certB.RawData);
+
+        a.PeerDiscovered += p => { if (p.Fingerprint == bFp) aSeesB.TrySetResult(p); };
+        b.PeerDiscovered += p => { if (p.Fingerprint == aFp) bSeesA.TrySetResult(p); };
+        a.PairingCandidateReady += async (_, _) => await a.ConfirmAsync();
+        b.PairingCandidateReady += async (_, _) => await b.ConfirmAsync();
+        a.PairingCompleted += r => aCompleted.TrySetResult(r);
+        b.PairingCompleted += r => bCompleted.TrySetResult(r);
+
+        await a.StartAsync();
+        await b.StartAsync();
+
+        var bPeer = await aSeesB.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var aPeer = await bSeesA.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Both dial concurrently.
+        await Task.WhenAll(a.RequestPairingAsync(bPeer), b.RequestPairingAsync(aPeer));
+
+        var aRes = await aCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var bRes = await bCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(bFp, aRes.PeerFingerprint);
+        Assert.Equal(aFp, bRes.PeerFingerprint);
+    }
+
+    [Fact]
     public async Task ThirdConnectionWhileBusy_IsDropped_ActiveSessionUnaffected()
     {
         using var certA = CertificateFactory.CreateSelfSigned("A");

@@ -23,6 +23,12 @@ public sealed class PairingService : IDisposable
     private bool _ourConfirmSent;
     private bool _peerConfirmReceived;
     private CancellationTokenSource? _decisionTimeoutCts;
+    private CancellationTokenSource? _dialCts;
+    // True when _activeConnection is our own outgoing dial (not an accepted incoming).
+    // Used by OnActiveConnectionClosed to distinguish the tiebreaker race from a real drop.
+    private bool _activeConnectionIsOutgoing;
+    // Cancels the deferred "wait for incoming after outgoing died" timeout.
+    private CancellationTokenSource? _recoveryTimeoutCts;
 
     public string OwnFingerprint => _ownFingerprint;
     public PairingState State { get { lock (_stateLock) return _state; } }
@@ -54,12 +60,19 @@ public sealed class PairingService : IDisposable
 
     public async Task RequestPairingAsync(PeerCandidate peer)
     {
+        CancellationToken dialCt;
         lock (_stateLock)
         {
+            // If an incoming connection already kicked off the session (extreme race where
+            // the incoming TLS arrived before the user's "Pair" click), let the incoming path
+            // continue — nothing for us to dial.
+            if (_state == PairingState.Negotiating && _activeConnection is not null) return;
             if (_state != PairingState.Idle)
                 throw new InvalidOperationException($"Cannot request pairing in state {_state}.");
             _state = PairingState.Negotiating;
             _activePeer = peer;
+            _dialCts = new CancellationTokenSource();
+            dialCt = _dialCts.Token;
         }
 
         Connection conn;
@@ -67,33 +80,92 @@ public sealed class PairingService : IDisposable
         {
             conn = await TransportConnector.ConnectAsync(
                 peer.Address.ToString(), peer.TcpPort, _options.OwnCertificate,
-                expectedPeerFingerprint: null, CancellationToken.None);
+                expectedPeerFingerprint: null, dialCt);
+        }
+        catch (OperationCanceledException)
+        {
+            // Race tiebreaker cancelled us in favour of the incoming connection. The incoming
+            // path is driving the session forward; we exit silently.
+            return;
         }
         catch (Exception ex)
         {
-            lock (_stateLock) { _state = PairingState.Failed; _activePeer = null; }
-            PairingFailed?.Invoke(PairingFailureReason.TlsHandshakeFailed, ex.Message);
+            Fail(PairingFailureReason.TlsHandshakeFailed, ex.Message);
             return;
         }
 
-        AdoptConnection(conn);
+        bool adopt;
+        lock (_stateLock)
+        {
+            // If an incoming connection beat us to adoption while we were still dialing,
+            // our outgoing is the race-loser. Drop it. No handlers wired yet → nothing fires.
+            // Also drop if the tiebreaker already cancelled us — the incoming path will adopt
+            // its connection momentarily even if _activeConnection isn't set yet.
+            adopt = _activeConnection is null
+                    && _state == PairingState.Negotiating
+                    && (_dialCts is null || !_dialCts.IsCancellationRequested);
+        }
+        if (!adopt) { conn.Dispose(); return; }
+        AdoptConnection(conn, isOutgoing: true);
     }
 
     private void OnIncomingConnection(Connection conn)
     {
+        bool adopt;
         lock (_stateLock)
         {
-            if (_state != PairingState.Idle) { conn.Dispose(); return; }
-            _state = PairingState.Negotiating;
-            // Peer device name not yet known — filled in once we receive HELLO.
-            _activePeer = new PeerCandidate(System.Net.IPAddress.Loopback, 0, conn.PeerFingerprint ?? "", "");
+            // Past Negotiating? We're busy with an active session — drop a third connection.
+            if (_state == PairingState.AwaitingDecision ||
+                _state == PairingState.Completed ||
+                _state == PairingState.Failed)
+            {
+                conn.Dispose(); return;
+            }
+
+            if (_state == PairingState.Idle)
+            {
+                // Pure incoming, no outgoing race. Adopt directly.
+                _state = PairingState.Negotiating;
+                _activePeer = new PeerCandidate(
+                    System.Net.IPAddress.Loopback, 0, conn.PeerFingerprint ?? "", "");
+                adopt = true;
+            }
+            else
+            {
+                // _state == Negotiating: an outgoing dial is in flight. Apply the deterministic
+                // race rule — smaller fingerprint keeps its OUTGOING dial; larger keeps INCOMING.
+                string peerFp = conn.PeerFingerprint ?? "";
+                bool localIsSmaller = string.CompareOrdinal(_ownFingerprint, peerFp) < 0;
+                if (localIsSmaller)
+                {
+                    // We keep our outgoing dial; drop this incoming.
+                    conn.Dispose(); return;
+                }
+                // We are larger — cancel our outgoing dial and adopt this incoming.
+                // If the dial has already completed, the cancel is a no-op and
+                // RequestPairingAsync's continuation will drop the loser via the
+                // `_activeConnection is null` check (it will be non-null by then).
+                _dialCts?.Cancel();
+                adopt = true;
+            }
         }
-        AdoptConnection(conn);
+        if (adopt) AdoptConnection(conn, isOutgoing: false);
     }
 
-    private void AdoptConnection(Connection conn)
+    private void AdoptConnection(Connection conn, bool isOutgoing = false)
     {
-        lock (_stateLock) { _activeConnection = conn; }
+        lock (_stateLock)
+        {
+            _activeConnection = conn;
+            _activeConnectionIsOutgoing = isOutgoing;
+            // If an incoming connection is taking over, cancel any pending recovery timeout
+            // that was started when the outgoing died in OnActiveConnectionClosed.
+            if (!isOutgoing)
+            {
+                _recoveryTimeoutCts?.Cancel();
+                _recoveryTimeoutCts = null;
+            }
+        }
 
         // The lambdas capture `conn` so we can ignore late events from a connection that the
         // race tiebreaker (Task 14) may later replace. Wired this way from day one so later
@@ -120,9 +192,40 @@ public sealed class PairingService : IDisposable
 
     private void OnActiveConnectionClosed()
     {
-        // Treat a drop as ConnectionLost only if we're still mid-pairing. Fail is idempotent,
-        // so a Closed firing after Completed or Failed is a harmless no-op.
-        Fail(PairingFailureReason.ConnectionLost, "peer disconnected");
+        // Special case for the simultaneous-dial tiebreaker race: the "larger FP" side may
+        // have mistakenly adopted its own outgoing dial before OnIncomingConnection had a
+        // chance to cancel it. The peer (smaller FP) immediately drops the incoming (our
+        // outgoing), killing the connection. The correct incoming connection is arriving in
+        // parallel via the listener. We defer the failure by a short window so that
+        // OnIncomingConnection can overwrite _activeConnection before we give up.
+        bool isRaceWindow;
+        CancellationTokenSource? recoveryCts = null;
+        lock (_stateLock)
+        {
+            isRaceWindow = _state == PairingState.Negotiating && _activeConnectionIsOutgoing;
+            if (isRaceWindow)
+            {
+                _recoveryTimeoutCts?.Cancel();
+                _recoveryTimeoutCts = recoveryCts = new CancellationTokenSource();
+            }
+        }
+
+        if (!isRaceWindow)
+        {
+            // Treat a drop as ConnectionLost only if we're still mid-pairing. Fail is idempotent,
+            // so a Closed firing after Completed or Failed is a harmless no-op.
+            Fail(PairingFailureReason.ConnectionLost, "peer disconnected");
+            return;
+        }
+
+        // Give the incoming connection a short window to arrive and take over.
+        // If it does, OnIncomingConnection will cancel recoveryCts before we fail.
+        _ = Task.Delay(TimeSpan.FromSeconds(3), recoveryCts!.Token).ContinueWith(t =>
+        {
+            recoveryCts.Dispose();
+            if (t.IsCanceled) return; // incoming arrived, recovery succeeded
+            Fail(PairingFailureReason.ConnectionLost, "peer disconnected (no incoming after outgoing died)");
+        }, TaskScheduler.Default);
     }
 
     private void OnFrameReceived(MessageType type, byte[] payload)
@@ -271,6 +374,10 @@ public sealed class PairingService : IDisposable
         {
             _decisionTimeoutCts?.Cancel();
             _decisionTimeoutCts = null;
+            _dialCts?.Cancel();
+            _dialCts = null;
+            _recoveryTimeoutCts?.Cancel();
+            _recoveryTimeoutCts = null;
             _activeConnection?.Dispose();
             _activeConnection = null;
         }
