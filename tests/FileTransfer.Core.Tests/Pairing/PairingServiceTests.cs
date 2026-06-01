@@ -1,5 +1,7 @@
 using FileTransfer.Core.Crypto;
 using FileTransfer.Core.Pairing;
+using FileTransfer.Core.Protocol;
+using FileTransfer.Core.Transport;
 
 namespace FileTransfer.Core.Tests.Pairing;
 
@@ -265,5 +267,49 @@ public class PairingServiceTests
         b.Dispose();
 
         Assert.Equal(PairingFailureReason.ConnectionLost, await aFailed.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task PeerSendsWrongProtocolVersion_FailsWithProtocolMismatch()
+    {
+        using var certA = CertificateFactory.CreateSelfSigned("A");
+        using var certB = CertificateFactory.CreateSelfSigned("B");
+
+        int udp = 47998;
+        using var a = new PairingService(new PairingServiceOptions
+        {
+            DeviceName = "A", OwnCertificate = certA,
+            UdpPort = udp, TcpPort = 47999,
+            AnnounceInterval = TimeSpan.FromMilliseconds(100),
+            DecisionTimeout = TimeSpan.FromSeconds(10),
+        });
+        var aSeesB = new TaskCompletionSource<PeerCandidate>();
+        var aFailed = new TaskCompletionSource<PairingFailureReason>();
+        a.PeerDiscovered += p => { if (p.Fingerprint == Fingerprint.Compute(certB.RawData)) aSeesB.TrySetResult(p); };
+        a.PairingFailed += (r, _) => aFailed.TrySetResult(r);
+        await a.StartAsync();
+
+        // Roll our own "B": broadcast a beacon and run an unpinned TLS listener that sends
+        // a HELLO with a bumped version as soon as it receives any frame.
+        using var bDiscovery = new FileTransfer.Core.Discovery.DiscoveryService(
+            udp, 48000, Fingerprint.Compute(certB.RawData), "B", TimeSpan.FromMilliseconds(100));
+        using var bListener = new TransportListener(48000, certB, expectedPeerFingerprint: null);
+        bListener.ConnectionAccepted += conn =>
+        {
+            conn.FrameReceived += (type, payload) =>
+            {
+                if (type != MessageType.Hello) return;
+                var bad = new HelloMessage { DeviceName = "B", ProtocolVersion = PairingService.ProtocolVersion + 1 };
+                _ = conn.SendAsync(MessageType.Hello, MessageSerializer.Serialize(bad), CancellationToken.None);
+            };
+            conn.Start();
+        };
+        bListener.Start();
+        bDiscovery.Start();
+
+        var bPeer = await aSeesB.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await a.RequestPairingAsync(bPeer);
+
+        Assert.Equal(PairingFailureReason.ProtocolMismatch, await aFailed.Task.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 }

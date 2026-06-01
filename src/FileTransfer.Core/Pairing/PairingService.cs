@@ -7,7 +7,7 @@ namespace FileTransfer.Core.Pairing;
 
 public sealed class PairingService : IDisposable
 {
-    private const int ProtocolVersion = 1;
+    internal const int ProtocolVersion = 1;
 
     private readonly PairingServiceOptions _options;
     private readonly string _ownFingerprint;
@@ -140,6 +140,12 @@ public sealed class PairingService : IDisposable
         HelloMessage hello;
         try { hello = MessageSerializer.Deserialize<HelloMessage>(payload); }
         catch { return; } // malformed HELLO is handled as ConnectionLost in a later task
+
+        if (hello.ProtocolVersion != ProtocolVersion)
+        {
+            Fail(PairingFailureReason.ProtocolMismatch, $"peer version={hello.ProtocolVersion}");
+            return;
+        }
 
         PeerCandidate finalPeer;
         string code;
