@@ -312,4 +312,58 @@ public class PairingServiceTests
 
         Assert.Equal(PairingFailureReason.ProtocolMismatch, await aFailed.Task.WaitAsync(TimeSpan.FromSeconds(5)));
     }
+
+    [Fact]
+    public async Task ThirdConnectionWhileBusy_IsDropped_ActiveSessionUnaffected()
+    {
+        using var certA = CertificateFactory.CreateSelfSigned("A");
+        using var certB = CertificateFactory.CreateSelfSigned("B");
+        using var certC = CertificateFactory.CreateSelfSigned("C");
+
+        int udp = 48010;
+        using var a = new PairingService(new PairingServiceOptions
+        {
+            DeviceName = "A", OwnCertificate = certA,
+            UdpPort = udp, TcpPort = 48011,
+            AnnounceInterval = TimeSpan.FromMilliseconds(100),
+            DecisionTimeout = TimeSpan.FromSeconds(10),
+        });
+        using var b = new PairingService(new PairingServiceOptions
+        {
+            DeviceName = "B", OwnCertificate = certB,
+            UdpPort = udp, TcpPort = 48012,
+            AnnounceInterval = TimeSpan.FromMilliseconds(100),
+            DecisionTimeout = TimeSpan.FromSeconds(10),
+        });
+
+        var aSeesB = new TaskCompletionSource<PeerCandidate>();
+        var aReady = new TaskCompletionSource();
+        var bReady = new TaskCompletionSource();
+        var aCompleted = new TaskCompletionSource<PairingResult>();
+        string bFp = Fingerprint.Compute(certB.RawData);
+        a.PeerDiscovered += p => { if (p.Fingerprint == bFp) aSeesB.TrySetResult(p); };
+        a.PairingCandidateReady += (_, _) => aReady.TrySetResult();
+        b.PairingCandidateReady += (_, _) => bReady.TrySetResult();
+        a.PairingCompleted += r => aCompleted.TrySetResult(r);
+        b.PairingCandidateReady += async (_, _) => await b.ConfirmAsync();
+
+        await a.StartAsync();
+        await b.StartAsync();
+        await a.RequestPairingAsync(await aSeesB.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        await Task.WhenAll(aReady.Task, bReady.Task).WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Now A and B are in AwaitingDecision. A rogue third party C dials B directly.
+        try
+        {
+            using var rogueConn = await TransportConnector.ConnectAsync(
+                "127.0.0.1", 48012, certC, expectedPeerFingerprint: null, CancellationToken.None);
+            await Task.Delay(300); // give B time to drop the rogue
+        }
+        catch { /* B may RST the TCP, which is fine */ }
+
+        // A → B confirm should still complete normally.
+        await a.ConfirmAsync();
+        var result = await aCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(bFp, result.PeerFingerprint);
+    }
 }
