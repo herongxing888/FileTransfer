@@ -232,4 +232,53 @@ public class MainViewModelTests
         Assert.Single(node.Cancelled);
         Assert.Equal(id, node.Cancelled[0]);
     }
+
+    [Fact]
+    public async Task FileOfferReceived_AppendsReceivingBubble()
+    {
+        var (vm, _, node, _) = NewVm(paired: true);
+        await vm.StartAsync();
+        var id = Guid.NewGuid();
+        node.RaiseFileOffer(new FileTransfer.Core.Protocol.FileOffer
+        {
+            Id = id, Name = "incoming.bin", Size = 5000, Mime = "application/octet-stream"
+        });
+        Assert.Single(vm.Messages);
+        var fileVm = Assert.IsType<FileMessageViewModel>(vm.Messages[0]);
+        Assert.False(fileVm.IsOutgoing);
+        Assert.Equal(FileMessageState.Receiving, fileVm.State);
+        Assert.Equal("incoming.bin", fileVm.Name);
+    }
+
+    [Fact]
+    public async Task FileCompleted_OnReceive_SetsReceivedWithPath()
+    {
+        var (vm, _, node, _) = NewVm(paired: true);
+        await vm.StartAsync();
+        var id = Guid.NewGuid();
+        node.RaiseFileOffer(new FileTransfer.Core.Protocol.FileOffer
+        {
+            Id = id, Name = "incoming.bin", Size = 5000, Mime = "application/octet-stream"
+        });
+        node.RaiseFileCompleted(id, @"C:\Recv\incoming.bin");
+        var fileVm = (FileMessageViewModel)vm.Messages[0];
+        Assert.Equal(FileMessageState.Received, fileVm.State);
+        Assert.Equal(@"C:\Recv\incoming.bin", fileVm.ResolvedPath);
+    }
+
+    [Fact]
+    public async Task TransferFailed_OnReceive_SetsFailedWithReason()
+    {
+        var (vm, _, node, _) = NewVm(paired: true);
+        await vm.StartAsync();
+        var id = Guid.NewGuid();
+        node.RaiseFileOffer(new FileTransfer.Core.Protocol.FileOffer
+        {
+            Id = id, Name = "incoming.bin", Size = 5000, Mime = "application/octet-stream"
+        });
+        node.RaiseTransferFailed(id, "disk full");
+        var fileVm = (FileMessageViewModel)vm.Messages[0];
+        Assert.Equal(FileMessageState.Failed, fileVm.State);
+        Assert.Equal("disk full", fileVm.FailureReason);
+    }
 }

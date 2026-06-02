@@ -51,6 +51,8 @@ public sealed partial class MainViewModel : ObservableObject
 
         _node.StatusChanged += s => _dispatcher.Invoke(() => OnStatusChanged(s));
         _node.TextReceived += t => _dispatcher.Invoke(() => OnTextReceived(t));
+        _node.FileOfferReceived += offer =>
+            _dispatcher.Invoke(() => OnFileOfferReceived(offer));
         _node.FileProgress += (id, recv, total) =>
             _dispatcher.Invoke(() => OnFileProgress(id, recv, total));
         _node.FileCompleted += (id, path) =>
@@ -122,6 +124,13 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void OnTextReceived(string text)
         => Messages.Add(new TextMessageViewModel(text, isOutgoing: false));
+
+    private void OnFileOfferReceived(FileTransfer.Core.Protocol.FileOffer offer)
+    {
+        var vm = new FileMessageViewModel(offer.Id, offer.Name, offer.Size, offer.Mime, isOutgoing: false);
+        _filesById[offer.Id] = vm;
+        Messages.Add(vm);
+    }
 
     [RelayCommand]
     private async Task DropFiles(string[]? paths)
