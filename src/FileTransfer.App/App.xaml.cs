@@ -68,6 +68,16 @@ public partial class App : Application
                           ?? "",
         };
         var dialog = new Views.SettingsDialog { DataContext = vm, Owner = MainWindow };
+        vm.UnpairRequested += () =>
+        {
+            _boot.Config.PeerFingerprint = null;
+            _boot.Config.PeerDeviceName = null;
+            _boot.Config.Save(_boot.ConfigPath, _boot.Protector);
+            dialog.DialogResult = false;  // skip the post-Save settings persistence
+            dialog.Close();
+            MessageBox.Show("已取消配对。请重启应用以重新配对。",
+                "FileTransfer", MessageBoxButton.OK, MessageBoxImage.Information);
+        };
         bool? result = dialog.ShowDialog();
         if (result == true)
         {

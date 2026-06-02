@@ -25,8 +25,20 @@ public sealed class FakeNodeHost : INodeHost
     public Task StartAsync() { Started = true; return Task.CompletedTask; }
     public Task SendTextAsync(string text) { SentTexts.Add(text); return Task.CompletedTask; }
 
-    public Guid NextSendFileId { get; set; } = Guid.NewGuid();
-    public Task<Guid> SendFileAsync(string path) { SentFiles.Add(path); return Task.FromResult(NextSendFileId); }
+    /// Optional override: when non-null, this GUID is returned for the NEXT SendFileAsync only,
+    /// then cleared. When null, a fresh GUID is generated for each call. This keeps existing
+    /// tests that rely on a specific id working while ensuring multi-file tests get distinct ids.
+    public Guid? NextSendFileId { get; set; }
+    public List<Guid> SentFileIds { get; } = new();
+
+    public Task<Guid> SendFileAsync(string path)
+    {
+        SentFiles.Add(path);
+        var id = NextSendFileId ?? Guid.NewGuid();
+        NextSendFileId = null;
+        SentFileIds.Add(id);
+        return Task.FromResult(id);
+    }
 
     public Task CancelTransferAsync(Guid id) { Cancelled.Add(id); return Task.CompletedTask; }
     public void Stop() { Stopped = true; }
