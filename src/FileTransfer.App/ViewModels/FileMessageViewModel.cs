@@ -24,6 +24,10 @@ public sealed partial class FileMessageViewModel : ObservableObject
     public bool IsImage => Mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
                             && State == FileMessageState.Received;
 
+    public bool ShowCancelButton => State is FileMessageState.Sending or FileMessageState.Receiving;
+
+    partial void OnStateChanged(FileMessageState value) => OnPropertyChanged(nameof(ShowCancelButton));
+
     public FileMessageViewModel(
         Guid id, string name, long size, string mime, bool isOutgoing,
         Func<Guid, Task>? onCancel = null)

@@ -24,12 +24,15 @@ public partial class App : Application
             var pairing = _boot.PairingHost ?? new NullPairingHost();
             var node = _boot.NodeHost ?? new NullNodeHost();
             var clipboard = new WpfClipboard();
+            var filePicker = new WpfFilePicker();
 
-            _mainVm = new MainViewModel(dispatcher, pairing, node, clipboard, _boot.IsPaired);
+            _mainVm = new MainViewModel(dispatcher, pairing, node, clipboard, filePicker, _boot.IsPaired);
             _mainVm.PairingCodeRequested += (code, peerName) => ShowPairingDialog(code, peerName);
             _mainVm.PairingPersisted += result => OnPairingPersisted(result);
+            _mainVm.SettingsRequested += () => ShowSettingsDialog();
 
             var window = new MainWindow { DataContext = _mainVm };
+            MainWindow = window;
             window.Show();
             await _mainVm.StartAsync();
         }
@@ -42,12 +45,37 @@ public partial class App : Application
 
     private void ShowPairingDialog(string code, string peerName)
     {
-        // PairingCodeDialog View is added in Task 15; this method will be hooked up there.
-        // For Task 14 we keep a minimal placeholder so the integration compiles end-to-end.
-        MessageBox.Show($"Pairing code: {code} (peer: {peerName}). Dialog UI lands in Task 15.",
-            "Pairing", MessageBoxButton.OKCancel);
-        // Without a real dialog, default to Reject so the pairing isn't silently accepted.
-        _ = _mainVm!.RespondToPairingAsync(PairingDecision.Rejected);
+        var vm = new PairingCodeDialogViewModel(code, peerName);
+        var dialog = new Views.PairingCodeDialog { DataContext = vm, Owner = MainWindow };
+        dialog.ShowDialog();
+        var decision = vm.Decision ?? PairingDecision.Rejected;
+        _ = _mainVm!.RespondToPairingAsync(decision);
+    }
+
+    private void ShowSettingsDialog()
+    {
+        if (_boot is null || _mainVm is null) return;
+        var folderPicker = new WpfFolderPicker();
+        var autoStart = new WpfAutoStartRegistry();
+        var exePath = Environment.ProcessPath ?? "FileTransfer.App.exe";
+        var vm = new SettingsViewModel(folderPicker, autoStart, exePath)
+        {
+            DeviceName = _boot.Config.DeviceName,
+            ReceiveDirectory = _boot.Config.ReceiveDirectory,
+            AutoStart = _boot.Config.AutoStart,
+            OwnFingerprint = (_boot.PairingHost as Composition.PairingServiceHost)?.OwnFingerprint
+                          ?? (_boot.NodeHost as Composition.NodeHost)?.OwnFingerprint
+                          ?? "",
+        };
+        var dialog = new Views.SettingsDialog { DataContext = vm, Owner = MainWindow };
+        bool? result = dialog.ShowDialog();
+        if (result == true)
+        {
+            _boot.Config.DeviceName = vm.DeviceName;
+            _boot.Config.ReceiveDirectory = vm.ReceiveDirectory;
+            _boot.Config.AutoStart = vm.AutoStart;
+            _boot.Config.Save(_boot.ConfigPath, _boot.Protector);
+        }
     }
 
     private void OnPairingPersisted(PairingResult result)

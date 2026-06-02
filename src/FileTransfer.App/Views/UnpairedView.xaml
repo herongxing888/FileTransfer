@@ -1,0 +1,34 @@
+<UserControl x:Class="FileTransfer.App.Views.UnpairedView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBlock Text="搜索附近设备..." FontSize="16" Margin="0,0,0,8"/>
+        <ListBox Grid.Row="1" ItemsSource="{Binding Devices}">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="{Binding DeviceName}" FontWeight="Bold"/>
+                            <TextBlock Text="{Binding Fingerprint}" FontSize="10" Foreground="Gray"/>
+                        </StackPanel>
+                        <Button Grid.Column="1" Content="配对"
+                                Command="{Binding DataContext.RequestPairingCommand,
+                                                  RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                CommandParameter="{Binding}"/>
+                    </Grid>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+        <TextBlock Grid.Row="2" Foreground="Red" Margin="0,8,0,0"
+                   Text="{Binding LastError}"/>
+    </Grid>
+</UserControl>

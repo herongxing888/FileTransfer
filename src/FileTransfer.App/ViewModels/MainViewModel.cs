@@ -14,6 +14,7 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly IPairingHost _pairing;
     private readonly INodeHost _node;
     private readonly IClipboard _clipboard;
+    private readonly IFilePicker _filePicker;
 
     [ObservableProperty]
     private AppState _state;
@@ -33,13 +34,15 @@ public sealed partial class MainViewModel : ObservableObject
 
     public event Action<string /*code*/, string /*peerName*/>? PairingCodeRequested;
     public event Action<PairingResult>? PairingPersisted;
+    public event Action? SettingsRequested;
 
-    public MainViewModel(IDispatcher dispatcher, IPairingHost pairing, INodeHost node, IClipboard clipboard, bool isPairedOnBoot)
+    public MainViewModel(IDispatcher dispatcher, IPairingHost pairing, INodeHost node, IClipboard clipboard, IFilePicker filePicker, bool isPairedOnBoot)
     {
         _dispatcher = dispatcher;
         _pairing = pairing;
         _node = node;
         _clipboard = clipboard;
+        _filePicker = filePicker;
         _state = isPairedOnBoot ? AppState.Offline : AppState.Unpaired;
 
         _pairing.PeerDiscovered += peer =>
@@ -150,6 +153,18 @@ public sealed partial class MainViewModel : ObservableObject
         _sendQueue.Enqueue(path);
         await PumpAsync();
     }
+
+    [RelayCommand]
+    private async Task PickFile()
+    {
+        var picked = await _filePicker.PickAsync();
+        if (picked.Count == 0) return;
+        foreach (var p in picked) _sendQueue.Enqueue(p);
+        await PumpAsync();
+    }
+
+    [RelayCommand]
+    private void OpenSettings() => SettingsRequested?.Invoke();
 
     private async Task PumpAsync()
     {
