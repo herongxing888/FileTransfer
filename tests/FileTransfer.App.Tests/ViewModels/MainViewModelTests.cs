@@ -189,4 +189,47 @@ public class MainViewModelTests
         node.SetStatus(ConnectionStatus.Offline);
         Assert.Equal(AppState.Offline, vm.State);
     }
+
+    [Fact]
+    public async Task DropFilesCommand_QueuesAllPathsAndSendsSerially()
+    {
+        var (vm, _, node, _) = NewVm(paired: true);
+        await vm.StartAsync();
+        node.NextSendFileId = Guid.NewGuid();
+        await vm.DropFilesCommand.ExecuteAsync(new[] { @"C:\a.txt", @"C:\b.txt", @"C:\c.txt" });
+        // Synchronous fake: all three sends already happened in order.
+        Assert.Equal(3, node.SentFiles.Count);
+        Assert.Equal(@"C:\a.txt", node.SentFiles[0]);
+        Assert.Equal(@"C:\b.txt", node.SentFiles[1]);
+        Assert.Equal(@"C:\c.txt", node.SentFiles[2]);
+        Assert.Equal(3, vm.Messages.Count);
+        Assert.All(vm.Messages, m => Assert.IsType<FileMessageViewModel>(m));
+    }
+
+    [Fact]
+    public async Task FileProgress_UpdatesMatchingFileMessage()
+    {
+        var (vm, _, node, _) = NewVm(paired: true);
+        await vm.StartAsync();
+        var id = Guid.NewGuid();
+        node.NextSendFileId = id;
+        await vm.DropFilesCommand.ExecuteAsync(new[] { @"C:\big.bin" });
+        var fileVm = (FileMessageViewModel)vm.Messages[0];
+        node.RaiseFileProgress(id, 500, 1000);
+        Assert.Equal(0.5, fileVm.Progress, 3);
+    }
+
+    [Fact]
+    public async Task CancelTransferCommand_CallsNode()
+    {
+        var (vm, _, node, _) = NewVm(paired: true);
+        await vm.StartAsync();
+        var id = Guid.NewGuid();
+        node.NextSendFileId = id;
+        await vm.DropFilesCommand.ExecuteAsync(new[] { @"C:\big.bin" });
+        var fileVm = (FileMessageViewModel)vm.Messages[0];
+        fileVm.CancelCommand.Execute(null);
+        Assert.Single(node.Cancelled);
+        Assert.Equal(id, node.Cancelled[0]);
+    }
 }

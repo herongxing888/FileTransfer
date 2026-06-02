@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using FileTransfer.App.Services;
@@ -21,6 +22,10 @@ public sealed partial class MainViewModel : ObservableObject
 
     [ObservableProperty]
     private string _inputText = "";
+
+    private readonly Dictionary<Guid, FileMessageViewModel> _filesById = new();
+    private readonly Queue<string> _sendQueue = new();
+    private bool _pumpRunning;
 
     public ObservableCollection<DeviceCandidateViewModel> Devices { get; } = new();
     public ObservableCollection<object> Messages { get; } = new();
@@ -46,6 +51,12 @@ public sealed partial class MainViewModel : ObservableObject
 
         _node.StatusChanged += s => _dispatcher.Invoke(() => OnStatusChanged(s));
         _node.TextReceived += t => _dispatcher.Invoke(() => OnTextReceived(t));
+        _node.FileProgress += (id, recv, total) =>
+            _dispatcher.Invoke(() => OnFileProgress(id, recv, total));
+        _node.FileCompleted += (id, path) =>
+            _dispatcher.Invoke(() => OnFileCompleted(id, path));
+        _node.TransferFailed += (id, reason) =>
+            _dispatcher.Invoke(() => OnTransferFailed(id, reason));
     }
 
     public Task StartAsync()
@@ -111,4 +122,70 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void OnTextReceived(string text)
         => Messages.Add(new TextMessageViewModel(text, isOutgoing: false));
+
+    [RelayCommand]
+    private async Task DropFiles(string[]? paths)
+    {
+        if (paths is null || paths.Length == 0) return;
+        foreach (var p in paths) _sendQueue.Enqueue(p);
+        await PumpAsync();
+    }
+
+    private async Task PumpAsync()
+    {
+        if (_pumpRunning) return;
+        _pumpRunning = true;
+        try
+        {
+            while (_sendQueue.Count > 0)
+            {
+                var path = _sendQueue.Dequeue();
+                var name = Path.GetFileName(path);
+                long size;
+                try { size = new FileInfo(path).Length; }
+                catch { size = 0; }
+                var mime = GuessMime(name);
+
+                var id = await _node.SendFileAsync(path);
+                var vm = new FileMessageViewModel(id, name, size, mime, isOutgoing: true,
+                    onCancel: _node.CancelTransferAsync);
+                _filesById[id] = vm;
+                Messages.Add(vm);
+            }
+        }
+        finally { _pumpRunning = false; }
+    }
+
+    private void OnFileProgress(Guid id, long received, long total)
+    {
+        if (_filesById.TryGetValue(id, out var vm))
+            vm.UpdateProgress(received, total);
+    }
+
+    private void OnFileCompleted(Guid id, string finalPath)
+    {
+        if (!_filesById.TryGetValue(id, out var vm)) return;
+        if (vm.IsOutgoing) vm.MarkSent();
+        else vm.MarkReceived(finalPath);
+    }
+
+    private void OnTransferFailed(Guid id, string reason)
+    {
+        if (_filesById.TryGetValue(id, out var vm))
+            vm.MarkFailed(reason);
+    }
+
+    private static string GuessMime(string fileName)
+    {
+        var ext = Path.GetExtension(fileName).ToLowerInvariant();
+        return ext switch
+        {
+            ".png" => "image/png",
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".gif" => "image/gif",
+            ".bmp" => "image/bmp",
+            ".pdf" => "application/pdf",
+            _ => "application/octet-stream",
+        };
+    }
 }
