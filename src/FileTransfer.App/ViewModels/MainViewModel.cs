@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using FileTransfer.App.Services;
+using FileTransfer.Core;
 using FileTransfer.Core.Pairing;
 
 namespace FileTransfer.App.ViewModels;
@@ -10,6 +11,7 @@ public sealed partial class MainViewModel : ObservableObject
 {
     private readonly IDispatcher _dispatcher;
     private readonly IPairingHost _pairing;
+    private readonly INodeHost _node;
 
     [ObservableProperty]
     private AppState _state;
@@ -17,21 +19,20 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private string? _lastError;
 
+    [ObservableProperty]
+    private string _inputText = "";
+
     public ObservableCollection<DeviceCandidateViewModel> Devices { get; } = new();
+    public ObservableCollection<object> Messages { get; } = new();
 
-    /// Raised when the peer's HELLO has been exchanged and the user should be shown
-    /// the 4-digit code. The View handler pops PairingCodeDialog and calls
-    /// RespondToPairingAsync with the user's decision.
     public event Action<string /*code*/, string /*peerName*/>? PairingCodeRequested;
-
-    /// Raised after PairingCompleted has been observed and AppConfig persistence
-    /// should happen (Composition Root performs the actual write + Node startup).
     public event Action<PairingResult>? PairingPersisted;
 
-    public MainViewModel(IDispatcher dispatcher, IPairingHost pairing, bool isPairedOnBoot)
+    public MainViewModel(IDispatcher dispatcher, IPairingHost pairing, INodeHost node, bool isPairedOnBoot)
     {
         _dispatcher = dispatcher;
         _pairing = pairing;
+        _node = node;
         _state = isPairedOnBoot ? AppState.Offline : AppState.Unpaired;
 
         _pairing.PeerDiscovered += peer =>
@@ -42,12 +43,34 @@ public sealed partial class MainViewModel : ObservableObject
             _dispatcher.Invoke(() => OnPairingCompleted(result));
         _pairing.PairingFailed += (reason, detail) =>
             _dispatcher.Invoke(() => OnPairingFailed(reason, detail));
+
+        _node.StatusChanged += s => _dispatcher.Invoke(() => OnStatusChanged(s));
+        _node.TextReceived += t => _dispatcher.Invoke(() => OnTextReceived(t));
     }
 
-    public Task StartAsync() => _pairing.StartAsync();
+    public Task StartAsync()
+    {
+        // The composition root decides which host to actually start based on isPairedOnBoot;
+        // here we always invoke both, the fakes/no-ops it injects when unused.
+        return Task.WhenAll(_pairing.StartAsync(), _node.StartAsync());
+    }
 
     public Task RespondToPairingAsync(PairingDecision decision) =>
         decision == PairingDecision.Confirmed ? _pairing.ConfirmAsync() : _pairing.RejectAsync();
+
+    [RelayCommand]
+    private Task RequestPairing(DeviceCandidateViewModel? candidate)
+        => candidate is null ? Task.CompletedTask : _pairing.RequestPairingAsync(candidate.Peer);
+
+    [RelayCommand]
+    private async Task SendText()
+    {
+        var text = InputText;
+        if (string.IsNullOrWhiteSpace(text)) return;
+        InputText = "";
+        Messages.Add(new TextMessageViewModel(text, isOutgoing: true));
+        await _node.SendTextAsync(text);
+    }
 
     private void OnPeerDiscovered(PeerCandidate peer)
     {
@@ -64,7 +87,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void OnPairingCompleted(PairingResult result)
     {
-        State = AppState.Offline; // Node connection comes up via StatusChanged later
+        State = AppState.Offline;
         Devices.Clear();
         LastError = null;
         PairingPersisted?.Invoke(result);
@@ -73,12 +96,19 @@ public sealed partial class MainViewModel : ObservableObject
     private void OnPairingFailed(PairingFailureReason reason, string detail)
     {
         State = AppState.Unpaired;
-        LastError = string.IsNullOrEmpty(detail)
-            ? reason.ToString()
-            : $"{reason}: {detail}";
+        LastError = string.IsNullOrEmpty(detail) ? reason.ToString() : $"{reason}: {detail}";
     }
 
-    [RelayCommand]
-    private Task RequestPairing(DeviceCandidateViewModel? candidate)
-        => candidate is null ? Task.CompletedTask : _pairing.RequestPairingAsync(candidate.Peer);
+    private void OnStatusChanged(ConnectionStatus status)
+    {
+        State = status switch
+        {
+            ConnectionStatus.Online => AppState.Online,
+            ConnectionStatus.Offline => AppState.Offline,
+            _ => State,
+        };
+    }
+
+    private void OnTextReceived(string text)
+        => Messages.Add(new TextMessageViewModel(text, isOutgoing: false));
 }

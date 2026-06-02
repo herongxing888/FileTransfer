@@ -2,18 +2,26 @@ using System.Net;
 using FileTransfer.App.Services;
 using FileTransfer.App.Tests.Fakes;
 using FileTransfer.App.ViewModels;
+using FileTransfer.Core;
 using FileTransfer.Core.Pairing;
 
 namespace FileTransfer.App.Tests.ViewModels;
 
 public class MainViewModelTests
 {
-    private static (MainViewModel vm, FakePairingHost host, ImmediateDispatcher dispatcher) NewVmUnpaired()
+    private static (MainViewModel vm, FakePairingHost host, FakeNodeHost node, ImmediateDispatcher dispatcher) NewVm(bool paired)
     {
         var dispatcher = new ImmediateDispatcher();
-        var host = new FakePairingHost();
-        var vm = new MainViewModel(dispatcher, host, isPairedOnBoot: false);
-        return (vm, host, dispatcher);
+        var pairing = new FakePairingHost();
+        var node = new FakeNodeHost();
+        var vm = new MainViewModel(dispatcher, pairing, node, isPairedOnBoot: paired);
+        return (vm, pairing, node, dispatcher);
+    }
+
+    private static (MainViewModel vm, FakePairingHost host, ImmediateDispatcher dispatcher) NewVmUnpaired()
+    {
+        var (vm, pairing, _, dispatcher) = NewVm(paired: false);
+        return (vm, pairing, dispatcher);
     }
 
     [Fact]
@@ -121,5 +129,64 @@ public class MainViewModelTests
         Assert.Equal(AppState.Unpaired, vm.State);
         Assert.NotNull(vm.LastError);
         Assert.Contains("PeerRejected", vm.LastError);
+    }
+
+    [Fact]
+    public async Task SendTextCommand_OnPaired_CallsNodeAndAppendsOutgoingBubble()
+    {
+        var (vm, _, node, _) = NewVm(paired: true);
+        await vm.StartAsync();
+        vm.InputText = "hello";
+        await vm.SendTextCommand.ExecuteAsync(null);
+        Assert.Single(node.SentTexts);
+        Assert.Equal("hello", node.SentTexts[0]);
+        Assert.Single(vm.Messages);
+        var msg = Assert.IsType<TextMessageViewModel>(vm.Messages[0]);
+        Assert.True(msg.IsOutgoing);
+        Assert.Equal("hello", msg.Text);
+        Assert.Equal("", vm.InputText);   // cleared after send
+    }
+
+    [Fact]
+    public async Task SendTextCommand_EmptyInput_DoesNotSend()
+    {
+        var (vm, _, node, _) = NewVm(paired: true);
+        await vm.StartAsync();
+        vm.InputText = "   ";
+        await vm.SendTextCommand.ExecuteAsync(null);
+        Assert.Empty(node.SentTexts);
+        Assert.Empty(vm.Messages);
+    }
+
+    [Fact]
+    public async Task TextReceived_AppendsIncomingBubble()
+    {
+        var (vm, _, node, _) = NewVm(paired: true);
+        await vm.StartAsync();
+        node.RaiseTextReceived("hi back");
+        Assert.Single(vm.Messages);
+        var msg = Assert.IsType<TextMessageViewModel>(vm.Messages[0]);
+        Assert.False(msg.IsOutgoing);
+        Assert.Equal("hi back", msg.Text);
+    }
+
+    [Fact]
+    public async Task StatusChanged_Online_SetsAppStateOnline()
+    {
+        var (vm, _, node, _) = NewVm(paired: true);
+        await vm.StartAsync();
+        Assert.Equal(AppState.Offline, vm.State);
+        node.SetStatus(ConnectionStatus.Online);
+        Assert.Equal(AppState.Online, vm.State);
+    }
+
+    [Fact]
+    public async Task StatusChanged_Offline_FromOnline_GoesBackToOffline()
+    {
+        var (vm, _, node, _) = NewVm(paired: true);
+        await vm.StartAsync();
+        node.SetStatus(ConnectionStatus.Online);
+        node.SetStatus(ConnectionStatus.Offline);
+        Assert.Equal(AppState.Offline, vm.State);
     }
 }
