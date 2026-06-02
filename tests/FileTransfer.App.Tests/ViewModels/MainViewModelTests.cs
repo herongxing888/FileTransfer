@@ -9,18 +9,20 @@ namespace FileTransfer.App.Tests.ViewModels;
 
 public class MainViewModelTests
 {
-    private static (MainViewModel vm, FakePairingHost host, FakeNodeHost node, ImmediateDispatcher dispatcher) NewVm(bool paired)
+    private static (MainViewModel vm, FakePairingHost host, FakeNodeHost node,
+                    FakeClipboard clipboard, ImmediateDispatcher dispatcher) NewVm(bool paired)
     {
         var dispatcher = new ImmediateDispatcher();
         var pairing = new FakePairingHost();
         var node = new FakeNodeHost();
-        var vm = new MainViewModel(dispatcher, pairing, node, isPairedOnBoot: paired);
-        return (vm, pairing, node, dispatcher);
+        var clipboard = new FakeClipboard();
+        var vm = new MainViewModel(dispatcher, pairing, node, clipboard, isPairedOnBoot: paired);
+        return (vm, pairing, node, clipboard, dispatcher);
     }
 
     private static (MainViewModel vm, FakePairingHost host, ImmediateDispatcher dispatcher) NewVmUnpaired()
     {
-        var (vm, pairing, _, dispatcher) = NewVm(paired: false);
+        var (vm, pairing, _, _, dispatcher) = NewVm(paired: false);
         return (vm, pairing, dispatcher);
     }
 
@@ -134,7 +136,7 @@ public class MainViewModelTests
     [Fact]
     public async Task SendTextCommand_OnPaired_CallsNodeAndAppendsOutgoingBubble()
     {
-        var (vm, _, node, _) = NewVm(paired: true);
+        var (vm, _, node, _, _) = NewVm(paired: true);
         await vm.StartAsync();
         vm.InputText = "hello";
         await vm.SendTextCommand.ExecuteAsync(null);
@@ -150,7 +152,7 @@ public class MainViewModelTests
     [Fact]
     public async Task SendTextCommand_EmptyInput_DoesNotSend()
     {
-        var (vm, _, node, _) = NewVm(paired: true);
+        var (vm, _, node, _, _) = NewVm(paired: true);
         await vm.StartAsync();
         vm.InputText = "   ";
         await vm.SendTextCommand.ExecuteAsync(null);
@@ -161,7 +163,7 @@ public class MainViewModelTests
     [Fact]
     public async Task TextReceived_AppendsIncomingBubble()
     {
-        var (vm, _, node, _) = NewVm(paired: true);
+        var (vm, _, node, _, _) = NewVm(paired: true);
         await vm.StartAsync();
         node.RaiseTextReceived("hi back");
         Assert.Single(vm.Messages);
@@ -173,7 +175,7 @@ public class MainViewModelTests
     [Fact]
     public async Task StatusChanged_Online_SetsAppStateOnline()
     {
-        var (vm, _, node, _) = NewVm(paired: true);
+        var (vm, _, node, _, _) = NewVm(paired: true);
         await vm.StartAsync();
         Assert.Equal(AppState.Offline, vm.State);
         node.SetStatus(ConnectionStatus.Online);
@@ -183,7 +185,7 @@ public class MainViewModelTests
     [Fact]
     public async Task StatusChanged_Offline_FromOnline_GoesBackToOffline()
     {
-        var (vm, _, node, _) = NewVm(paired: true);
+        var (vm, _, node, _, _) = NewVm(paired: true);
         await vm.StartAsync();
         node.SetStatus(ConnectionStatus.Online);
         node.SetStatus(ConnectionStatus.Offline);
@@ -193,7 +195,7 @@ public class MainViewModelTests
     [Fact]
     public async Task DropFilesCommand_QueuesAllPathsAndSendsSerially()
     {
-        var (vm, _, node, _) = NewVm(paired: true);
+        var (vm, _, node, _, _) = NewVm(paired: true);
         await vm.StartAsync();
         node.NextSendFileId = Guid.NewGuid();
         await vm.DropFilesCommand.ExecuteAsync(new[] { @"C:\a.txt", @"C:\b.txt", @"C:\c.txt" });
@@ -209,7 +211,7 @@ public class MainViewModelTests
     [Fact]
     public async Task FileProgress_UpdatesMatchingFileMessage()
     {
-        var (vm, _, node, _) = NewVm(paired: true);
+        var (vm, _, node, _, _) = NewVm(paired: true);
         await vm.StartAsync();
         var id = Guid.NewGuid();
         node.NextSendFileId = id;
@@ -222,7 +224,7 @@ public class MainViewModelTests
     [Fact]
     public async Task CancelTransferCommand_CallsNode()
     {
-        var (vm, _, node, _) = NewVm(paired: true);
+        var (vm, _, node, _, _) = NewVm(paired: true);
         await vm.StartAsync();
         var id = Guid.NewGuid();
         node.NextSendFileId = id;
@@ -236,7 +238,7 @@ public class MainViewModelTests
     [Fact]
     public async Task FileOfferReceived_AppendsReceivingBubble()
     {
-        var (vm, _, node, _) = NewVm(paired: true);
+        var (vm, _, node, _, _) = NewVm(paired: true);
         await vm.StartAsync();
         var id = Guid.NewGuid();
         node.RaiseFileOffer(new FileTransfer.Core.Protocol.FileOffer
@@ -253,7 +255,7 @@ public class MainViewModelTests
     [Fact]
     public async Task FileCompleted_OnReceive_SetsReceivedWithPath()
     {
-        var (vm, _, node, _) = NewVm(paired: true);
+        var (vm, _, node, _, _) = NewVm(paired: true);
         await vm.StartAsync();
         var id = Guid.NewGuid();
         node.RaiseFileOffer(new FileTransfer.Core.Protocol.FileOffer
@@ -269,7 +271,7 @@ public class MainViewModelTests
     [Fact]
     public async Task TransferFailed_OnReceive_SetsFailedWithReason()
     {
-        var (vm, _, node, _) = NewVm(paired: true);
+        var (vm, _, node, _, _) = NewVm(paired: true);
         await vm.StartAsync();
         var id = Guid.NewGuid();
         node.RaiseFileOffer(new FileTransfer.Core.Protocol.FileOffer
@@ -280,5 +282,42 @@ public class MainViewModelTests
         var fileVm = (FileMessageViewModel)vm.Messages[0];
         Assert.Equal(FileMessageState.Failed, fileVm.State);
         Assert.Equal("disk full", fileVm.FailureReason);
+    }
+
+    [Fact]
+    public async Task PasteImageCommand_WithClipboardImage_EnqueuesAsFile()
+    {
+        var (vm, _, node, clipboard, _) = NewVm(paired: true);
+        await vm.StartAsync();
+        clipboard.NextResult = @"C:\Temp\screenshot.png";
+        await vm.PasteImageCommand.ExecuteAsync(null);
+        Assert.Single(node.SentFiles);
+        Assert.Equal(@"C:\Temp\screenshot.png", node.SentFiles[0]);
+        Assert.Equal(1, clipboard.CallCount);
+    }
+
+    [Fact]
+    public async Task PasteImageCommand_NoImage_NoOp()
+    {
+        var (vm, _, node, clipboard, _) = NewVm(paired: true);
+        await vm.StartAsync();
+        clipboard.NextResult = null;
+        await vm.PasteImageCommand.ExecuteAsync(null);
+        Assert.Empty(node.SentFiles);
+    }
+
+    [Fact]
+    public async Task ReceivedImageFile_HasIsImageTrue()
+    {
+        var (vm, _, node, _, _) = NewVm(paired: true);
+        await vm.StartAsync();
+        var id = Guid.NewGuid();
+        node.RaiseFileOffer(new FileTransfer.Core.Protocol.FileOffer
+        {
+            Id = id, Name = "shot.png", Size = 1000, Mime = "image/png"
+        });
+        node.RaiseFileCompleted(id, @"C:\Recv\shot.png");
+        var fileVm = (FileMessageViewModel)vm.Messages[0];
+        Assert.True(fileVm.IsImage);
     }
 }

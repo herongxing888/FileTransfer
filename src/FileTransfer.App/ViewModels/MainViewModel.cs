@@ -13,6 +13,7 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly IDispatcher _dispatcher;
     private readonly IPairingHost _pairing;
     private readonly INodeHost _node;
+    private readonly IClipboard _clipboard;
 
     [ObservableProperty]
     private AppState _state;
@@ -33,11 +34,12 @@ public sealed partial class MainViewModel : ObservableObject
     public event Action<string /*code*/, string /*peerName*/>? PairingCodeRequested;
     public event Action<PairingResult>? PairingPersisted;
 
-    public MainViewModel(IDispatcher dispatcher, IPairingHost pairing, INodeHost node, bool isPairedOnBoot)
+    public MainViewModel(IDispatcher dispatcher, IPairingHost pairing, INodeHost node, IClipboard clipboard, bool isPairedOnBoot)
     {
         _dispatcher = dispatcher;
         _pairing = pairing;
         _node = node;
+        _clipboard = clipboard;
         _state = isPairedOnBoot ? AppState.Offline : AppState.Unpaired;
 
         _pairing.PeerDiscovered += peer =>
@@ -137,6 +139,15 @@ public sealed partial class MainViewModel : ObservableObject
     {
         if (paths is null || paths.Length == 0) return;
         foreach (var p in paths) _sendQueue.Enqueue(p);
+        await PumpAsync();
+    }
+
+    [RelayCommand]
+    private async Task PasteImage()
+    {
+        var path = _clipboard.GrabImageAsPng();
+        if (path is null) return;
+        _sendQueue.Enqueue(path);
         await PumpAsync();
     }
 
